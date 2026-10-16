@@ -122,7 +122,8 @@ def analyze_bg(msgs, title, revision, reply_to=None):
                                    thinking=settings.thinking(),
                                    jev_provider=settings.jev_provider(),
                                    jev_model=settings.jev_model() or None,
-                                   jev_base_url=settings.jev_base_url() or None),
+                                   jev_base_url=settings.jev_base_url() or None,
+                                   use_jev=settings.use_jev()),
                      title, revision))
     except Exception as e:
         results.put(("err", f"{T('分析失败: ')}{e}", title, revision))
@@ -136,7 +137,7 @@ def check_update_bg():
 
 
 def start_analyze(title, msgs):
-    if not settings.has_jev_key():
+    if settings.use_jev() and not settings.has_jev_key():
         ov.set_status("请先在设置中配置模型", "warning")
         return
     if not settings.has_llm_key():
@@ -287,7 +288,7 @@ if __name__ == "__main__":  # Windows 的 spawn 会让子进程重新执行本�
         child = spawn_worker()
     if settings.debug_view():  # 上次开着就直接开回来
         set_debug(True)
-    if not settings.has_jev_key():
+    if not settings.has_key():  # 起草那把永远要；用 Jev 判断时判断那把也要（见 settings.has_key）
         ov.set_status("请先在设置中配置模型", "warning")
         ov.after(0, ov.open_settings)
     if settings.check_update() and update.parse_version(VERSION):  # 开发版没有版本号，不查也不烦源码用户

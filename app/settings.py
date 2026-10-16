@@ -65,6 +65,10 @@ def jev_base_url() -> str:
     """判断来源选「自定义」时要填的 SystemOne 地址；其余来源用表里的，这里返回空。"""
     return str(_read("jev_base_url") or "") if jev_provider() in JEV_CUSTOM else ""
 
+def use_jev() -> bool:
+    """要不要用 Jev 判断：默认开。关了整条链不碰 Jev，起草模型自己写候选、自己挑一条推荐。"""
+    return bool(_read("use_jev", True))
+
 def draft_provider() -> str:
     """起草走哪家（见 core/providers.DRAFT_PROVIDERS）。老配置里的 openrouter/deepseek 照样认。"""
     v = _read("draft_provider")
@@ -154,11 +158,15 @@ def llm_key() -> str:
 def has_llm_key() -> bool:
     return bool(llm_key())
 
-has_key = has_jev_key  # 旧名字：界面上「配没配好」问的就是判断模型这把 key
+def has_key() -> bool:
+    """界面上「配没配好」问的就是这个：起草那把永远必填；用 Jev 判断时判断那把也必填，
+    关掉 Jev 就只用起草那把，没配 Jev 也能直接用。"""
+    return has_llm_key() and (not use_jev() or has_jev_key())
 
 def save(relationship_text: str | None = None, context_n: int | None = None, *,
          jev_provider_text: str | None = None, jev_key_text: str | None = None,
          jev_model_text: str | None = None, jev_base_url_text: str | None = None,
+         use_jev_on: bool | None = None,
          draft_provider_text: str | None = None,
          llm_key_text: str | None = None, draft_model_text: str | None = None,
          draft_base_url_text: str | None = None, reply_target_on: bool | None = None,
@@ -189,6 +197,7 @@ def save(relationship_text: str | None = None, context_n: int | None = None, *,
         "style": keep(style_text, "style"),
         "jev_provider": jev, "jev_model": keep(jev_model_text, "jev_model"),
         "jev_base_url": keep(jev_base_url_text, "jev_base_url"),
+        "use_jev": flag(use_jev_on, use_jev),
         "draft_provider": draft, "draft_model": keep(draft_model_text, "draft_model"),
         "draft_base_url": keep(draft_base_url_text, "draft_base_url"),
         "reply_target": flag(reply_target_on, reply_target),

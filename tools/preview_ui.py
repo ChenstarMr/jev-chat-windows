@@ -16,7 +16,8 @@ from unittest.mock import patch
 from app import settings
 
 
-_STATES = ("ready", "waiting", "loading", "error", "setup", "settings", "paused", "debug")
+_STATES = ("ready", "waiting", "loading", "error", "setup", "settings", "nojev", "nojev-result",
+           "paused", "debug")
 
 # 调试视图预览用的真微信截图（只读进内存，不改不存）；没有就退一张空画面
 _FRAME = Path("/private/tmp/claude-501/-Users-lpitiless-Documents-project-wechatjev"
@@ -100,6 +101,11 @@ _RESULT = {
     "reply_to": "阿杰",  # 跟 _SENDERS[0] 一致，让「回复给 …」那行在演示里看得见
 }
 
+# 关掉 Jev 判断时的样子：没有判断摘要，只显示起草模型给的一句理由；推荐那条听模型的 best，没有百分比
+_RESULT_NOJEV = {**_RESULT, "best_index": 2, "best_reply": _RESULT["candidates"][2],
+                 "scores": [0.0, 0.0, 0.0], "answers": {}, "reply_to": None,
+                 "note": "推荐最后一条，主动问一句显得上心。"}
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(
@@ -115,7 +121,7 @@ def main() -> int:
     demo_settings = {"relationship": "friends", "context": 10,
                      "jev_key": configured, "llm_key": configured,
                      "jev_provider": "openrouter", "jev_model": "typesafe/jev-1.13",
-                     "jev_base_url": "",
+                     "jev_base_url": "", "use_jev": args.state != "nojev",
                      "draft_provider": "deepseek", "draft_model": "deepseek-flash",
                      "draft_base_url": "", "reply_target": True,
                      "style": "话少，基本不用标点，急了才发感叹号", "thinking": False,
@@ -123,6 +129,7 @@ def main() -> int:
 
     def save_demo_settings(relationship_text=None, context_n=None, *, jev_provider_text=None,
                            jev_key_text=None, jev_model_text=None, jev_base_url_text=None,
+                           use_jev_on=None,
                            draft_provider_text=None,
                            llm_key_text=None, draft_model_text=None, draft_base_url_text=None,
                            reply_target_on=None, style_text=None, thinking_on=None,
@@ -141,7 +148,8 @@ def main() -> int:
             if key:
                 demo_settings[name] = key
         for name, value in (("reply_target", reply_target_on), ("thinking", thinking_on),
-                            ("check_update", check_update_on), ("debug_view", debug_view_on)):
+                            ("check_update", check_update_on), ("debug_view", debug_view_on),
+                            ("use_jev", use_jev_on)):
             if value is not None:
                 demo_settings[name] = bool(value)
 
@@ -159,7 +167,8 @@ def main() -> int:
     with patch("core.jev_client.list_models", fake_jev_models), patch(
             "core.llm.list_models", fake_llm_models), patch.multiple(
         settings,
-        has_key=lambda: bool(demo_settings["jev_key"]),
+        has_key=lambda: bool(demo_settings["llm_key"])
+        and (not demo_settings["use_jev"] or bool(demo_settings["jev_key"])),
         has_jev_key=lambda: bool(demo_settings["jev_key"]),
         has_llm_key=lambda: bool(demo_settings["llm_key"]),
         jev_key=lambda: demo_settings["jev_key"],
@@ -169,6 +178,7 @@ def main() -> int:
         jev_provider=lambda: demo_settings["jev_provider"],
         jev_model=lambda: demo_settings["jev_model"],
         jev_base_url=lambda: demo_settings["jev_base_url"],
+        use_jev=lambda: demo_settings["use_jev"],
         draft_provider=lambda: demo_settings["draft_provider"],
         draft_model=lambda: demo_settings["draft_model"],
         draft_base_url=lambda: demo_settings["draft_base_url"],
@@ -211,7 +221,7 @@ def main() -> int:
                 ov.log_message(who, text, name, timestamp=timestamp, chat=chat)
             ov.set_targets(_GROUP, _SENDERS, _SENDERS[0])  # 群聊才有回复对象这一行
             ov.set_chat(_CHAT)
-            ov.show(_RESULT)
+            ov.show(_RESULT_NOJEV if args.state == "nojev-result" else _RESULT)
             ov.set_status("演示模式：已生成 3 条建议，点击填入仅模拟操作。", kind="success")
             ov.set_update("9.9.9", "https://github.com/ChenstarMr/jev-chat-windows/releases/latest")
             if args.state == "loading":
@@ -220,7 +230,7 @@ def main() -> int:
             elif args.state == "error":
                 ov.set_busy(True)
                 ov.set_status("演示模式：分析失败，请检查网络和密钥，等待下一条消息后重试。", kind="error")
-            elif args.state == "settings":
+            elif args.state in ("settings", "nojev"):
                 ov.open_settings()
             elif args.state == "paused":
                 ov.set_capture(False)

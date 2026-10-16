@@ -569,14 +569,16 @@ class Overlay:
         box.addWidget(_tlabel("模型", 16, "#304c3c", True))
         self._fetched = _Fetched()
         self._fetched.done.connect(self._models_fetched)
-        self.jev = self._model_group(box, "判断 · Jev", "jev", providers.JEV_PROVIDERS)
-        box.addWidget(self._hint(
-            "判断意图、紧张度，并给三条候选排序。四家给的是同一个 Jev，必填。"
-        ))
+        self.jev = self._model_group(box, "判断 · Jev", "jev", providers.JEV_PROVIDERS,
+                                     enable_switch=True)
+        self.jev.hint = self._hint(
+            "判断意图、紧张度，并给三条候选排序。四家给的是同一个 Jev，开着就必须填。"
+        )
+        box.addWidget(self.jev.hint)
         self.draft = self._model_group(box, "起草 · 语言模型", "draft", providers.DRAFT_PROVIDERS)
         box.addWidget(self._hint(
-            "写那三条候选。OpenAI / Anthropic / Gemini 三种接口都走各自官方 SDK。"
-            "默认 DeepSeek 官网直连，国内最快。"
+            "写那三条候选；关掉 Jev 时还由它挑一条推荐。"
+            "OpenAI / Anthropic / Gemini 三种接口都走各自官方 SDK。默认 DeepSeek 官网直连，国内最快。"
         ))
         think_row = QHBoxLayout()
         think_row.addWidget(_tlabel("起草时开启思考模式", 13), 1)
@@ -613,9 +615,10 @@ class Overlay:
         self._hintLabels.append(label)
         return label
 
-    def _model_group(self, box, title, kind, table):
-        """一组「来源 / 密钥 / 模型」控件，判断和起草各一份。table 是 core/providers.py 里那张表。"""
-        group = SimpleNamespace(kind=kind, table=table, ids=list(table),
+    def _model_group(self, box, title, kind, table, enable_switch=False):
+        """一组「来源 / 密钥 / 模型」控件，判断和起草各一份。table 是 core/providers.py 里那张表。
+        enable_switch：这一组顶上多一个「用 Jev 判断」开关；关掉整组收起来（显隐见 _sync_model_fields）。"""
+        group = SimpleNamespace(kind=kind, table=table, ids=list(table), hint=None,
                                 keyTitle="判断" if kind == "jev" else "起草",
                                 stored_key=lambda k=kind: (settings.jev_key() if k == "jev"
                                                            else settings.llm_key()))
@@ -625,13 +628,27 @@ class Overlay:
         group.keyState.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         heading.addWidget(group.keyState)
         box.addLayout(heading)
-        source_label = _tlabel("来源", 13)
-        box.addWidget(source_label)
+        group.enableSwitch = None
+        if enable_switch:  # 关掉就不调 Jev：起草模型自己写候选、自己挑一条推荐
+            enable_row = QHBoxLayout()
+            enable_row.addWidget(_tlabel("用 Jev 判断", 13), 1)
+            group.enableSwitch = SwitchButton()
+            bind(group.enableSwitch, "开", "setOnText")
+            bind(group.enableSwitch, "关", "setOffText")
+            bind(group.enableSwitch, "用 Jev 判断", "setAccessibleName")
+            group.enableSwitch.checkedChanged.connect(self._jev_toggled)  # 立刻生效，不等「保存设置」
+            enable_row.addWidget(group.enableSwitch)
+            box.addLayout(enable_row)
+            box.addWidget(self._hint(
+                "关掉后不调 Jev：起草模型自己写三条候选、自己挑一条推荐。Jev 连不上时用它。"
+            ))
+        group.sourceLabel = _tlabel("来源", 13)
+        box.addWidget(group.sourceLabel)
         group.providerBox = ComboBox()
         group.providerBox.setMinimumWidth(0)  # 选项文字长短不一，别让它撑开设置页
         group.providerBox.addItems([table[i].name for i in group.ids])
         bind(group.providerBox, lambda: f"{T(title)} · {T('来源')}", "setAccessibleName")
-        source_label.setBuddy(group.providerBox)
+        group.sourceLabel.setBuddy(group.providerBox)
         box.addWidget(group.providerBox)
         # 两组都有「自定义」来源，都要自己填地址；别的来源这一行藏着（显隐见 _sync_model_fields）
         group.baseLabel = _label("Base URL", 13)
@@ -642,29 +659,31 @@ class Overlay:
         bind(group.baseEdit, "自定义来源 Base URL", "setAccessibleName")
         group.baseLabel.setBuddy(group.baseEdit)
         box.addWidget(group.baseEdit)
-        key_label = _tlabel("密钥", 13)
-        box.addWidget(key_label)
+        group.keyLabel = _tlabel("密钥", 13)
+        box.addWidget(group.keyLabel)
         group.keyEdit = PasswordLineEdit()
         bind(group.keyEdit, lambda: f"{T(title)} · {T('密钥')}", "setAccessibleName")
-        key_label.setBuddy(group.keyEdit)
+        group.keyLabel.setBuddy(group.keyEdit)
         group.keyEdit.returnPressed.connect(self._save)
         box.addWidget(group.keyEdit)
-        box.addWidget(self._hint(
-            "上面选哪家就填哪家的 key；换来源重填一次，只存这一把。"))
-        model_label = _tlabel("模型", 13)
-        box.addWidget(model_label)
-        row = QHBoxLayout()
+        group.keyHint = self._hint("上面选哪家就填哪家的 key；换来源重填一次，只存这一把。")
+        box.addWidget(group.keyHint)
+        group.modelLabel = _tlabel("模型", 13)
+        box.addWidget(group.modelLabel)
+        group.modelRow = QWidget()  # 藏「模型 + 获取模型」这一行得整行一起藏，布局本身不能 setVisible
+        row = QHBoxLayout(group.modelRow)
+        row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(8)
         group.modelBox = EditableComboBox()  # 能选也能手打，接口新出的模型不用等我改代码
         group.modelBox.setMinimumWidth(0)
         bind(group.modelBox, lambda: f"{T(title)} · {T('模型')}", "setAccessibleName")
-        model_label.setBuddy(group.modelBox)
+        group.modelLabel.setBuddy(group.modelBox)
         row.addWidget(group.modelBox, 1)
         group.fetchButton = bind(PushButton(""), "获取模型")
         bind(group.fetchButton, lambda: f"{T(title)} · {T('获取模型')}", "setAccessibleName")
         group.fetchButton.clicked.connect(lambda: self._fetch_models(group))
         row.addWidget(group.fetchButton)
-        box.addLayout(row)
+        box.addWidget(group.modelRow)
         group.status = _label("", 12, _MUTED)
         box.addWidget(group.status)
         group.providerBox.currentIndexChanged.connect(lambda _: self._provider_changed(group))
@@ -701,6 +720,21 @@ class Overlay:
             custom = provider in providers.CUSTOM or provider in providers.JEV_CUSTOM
             group.baseLabel.setVisible(custom)
             group.baseEdit.setVisible(custom)
+        # 关掉 Jev 判断：这一组的来源/密钥/模型整块收起来，只留标题、开关和开关下面那句说明，
+        # 省得以为「不填就保存不了」。开关拨一下立刻落盘（见 _jev_toggled）。
+        jev_on = settings.use_jev()
+        jev_provider = self._provider_of(self.jev)
+        for widget in (self.jev.sourceLabel, self.jev.providerBox, self.jev.keyLabel,
+                       self.jev.keyEdit, self.jev.modelLabel, self.jev.modelRow,
+                       self.jev.status, self.jev.keyState):
+            widget.setVisible(jev_on)
+        custom = jev_provider in providers.CUSTOM or jev_provider in providers.JEV_CUSTOM
+        self.jev.baseLabel.setVisible(jev_on and custom)
+        self.jev.baseEdit.setVisible(jev_on and custom)
+        hints_on = jev_on and not self._compact  # 紧凑模式下所有灰字说明本来就收起来
+        self.jev.keyHint.setVisible(hints_on)
+        if self.jev.hint is not None:
+            self.jev.hint.setVisible(hints_on)
 
     def _fetch_models(self, group):
         """「获取模型」：拿填的 key（没填就拿存的）去问接口，网络调用丢后台线程。"""
@@ -803,6 +837,7 @@ class Overlay:
         self.styleEdit.setText(settings.style())
         self.contextBox.setValue(settings.context())
         self.targetSwitch.setChecked(settings.reply_target())
+        self.set_jev_switch(settings.use_jev())
         self._set_group(self.jev, settings.jev_provider(), settings.jev_model())
         self._set_group(self.draft, settings.draft_provider(), settings.draft_model())
         self.jev.baseEdit.setText(settings.jev_base_url())
@@ -818,18 +853,22 @@ class Overlay:
         relationship = relationship or self.relEdit.text().strip()
         jev_provider = self._provider_of(self.jev)
         draft_provider = self._provider_of(self.draft)
+        # 关掉 Jev 判断时这一组不校验：界面上整块是收起来的，没配 Jev 也能保存
+        required = [(self.draft, draft_provider)]
+        if self.jev.enableSwitch.isChecked():
+            required.insert(0, (self.jev, jev_provider))
         if not relationship:
             self._settings_feedback("请填写关系背景，或选择一个已有选项。", error=True)
             self.relEdit.setFocus()
             return
         # 自定义来源要自己填地址：两组都可能选到，逐组验（别的来源这一行是藏着的）
-        for group, provider in ((self.jev, jev_provider), (self.draft, draft_provider)):
+        for group, provider in required:
             if (provider in providers.CUSTOM or provider in providers.JEV_CUSTOM) \
                     and not group.baseEdit.text().strip():
                 self._settings_feedback("自定义来源要填 Base URL。", error=True)
                 group.baseEdit.setFocus()
                 return
-        for group, provider in ((self.jev, jev_provider), (self.draft, draft_provider)):
+        for group, provider in required:
             name = group.table[provider].name
             if not group.keyEdit.text().strip() and not group.stored_key():
                 self._settings_feedback(lambda group=group:
@@ -851,6 +890,7 @@ class Overlay:
                           jev_key_text=self.jev.keyEdit.text().strip() or None,
                           jev_model_text=self.jev.modelBox.text().strip(),
                           jev_base_url_text=jev_base,
+                          use_jev_on=self.jev.enableSwitch.isChecked(),
                           draft_provider_text=draft_provider,
                           llm_key_text=self.draft.keyEdit.text().strip() or None,
                           draft_model_text=self.draft.modelBox.text().strip(),
@@ -875,6 +915,26 @@ class Overlay:
         settings.save(debug_view_on=on)
         if self.on_toggle_debug:
             self.on_toggle_debug(on)
+
+    def _jev_toggled(self, on):
+        """Jev 开关也独立于「保存设置」：Jev 连不上时拨一下就先用起草模型顶着，不用等保存。"""
+        try:
+            settings.save(use_jev_on=on)
+        except Exception:
+            self.set_jev_switch(settings.use_jev())  # 存不下就拨回去，别让界面和配置对不上
+            self._settings_feedback("保存失败，请检查配置文件是否可写后重试。", error=True)
+            return
+        self._sync_model_fields()
+        self._settings_feedback("已关闭 Jev 判断：候选和推荐都交给起草模型。" if not on
+                                else "已开启 Jev 判断：意图、紧张度和排序由 Jev 给。")
+        if not self.cands and not self._busy:
+            self._empty_text()  # 「先设置，再开始」那套文案跟着换（只配了起草 key 也能直接开始）
+
+    def set_jev_switch(self, on):
+        """屏蔽信号地拨开关：加载设置时别触发一遍保存。"""
+        self.jev.enableSwitch.blockSignals(True)
+        self.jev.enableSwitch.setChecked(on)
+        self.jev.enableSwitch.blockSignals(False)
 
     def set_debug_switch(self, on):
         """调试窗被用户直接关掉时把开关拨回去；屏蔽信号，免得又回调一圈。"""
@@ -1190,12 +1250,18 @@ class Overlay:
         bind(self.insightTitle, lambda: T("对话参考 · 回复给 {name}").format(name=reply_to)
              if reply_to else T("对话参考"))
         answers = result.get("answers") or {}
-        bind(self.summary, lambda: T("建议：") + _choice(answers, "best_action"))
-        bind(self.intent, lambda: T("可能意图 · ") + _choice(answers, "true_intent") +
-                                 "\n" + T("可能需要 · ") + _choice(answers, "she_needs"))
+        if answers:  # Jev 判断在：照旧三行（建议 / 意图 / 可能需要 / 紧张度）
+            bind(self.summary, lambda: T("建议：") + _choice(answers, "best_action"))
+            bind(self.intent, lambda: T("可能意图 · ") + _choice(answers, "true_intent") +
+                                     "\n" + T("可能需要 · ") + _choice(answers, "she_needs"))
+        else:  # 没判断（关掉了 Jev，或 Jev 挂了）：只留起草模型给的那句说明
+            bind(self.summary, str(result.get("note") or "") or "没有 Jev 判断：候选和推荐都由起草模型直接给出。")
+            bind(self.intent, "")
+        self.intent.setVisible(bool(answers))
         score = (answers.get("danger_level") or {}).get("score")
         valid_score = isinstance(score, (int, float)) and isfinite(score) and 0 <= score <= 9
         bind(self.tension, lambda: f"{T('紧张度')} {score:.0f}/9" if valid_score else T("紧张度待判断"))
+        self.tension.setVisible(bool(answers))
         color = "#996819" if valid_score and score >= 3 else _MUTED
         if valid_score and score >= 6:
             color = "#b44832"

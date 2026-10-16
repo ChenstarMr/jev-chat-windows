@@ -6,11 +6,11 @@
 from __future__ import annotations
 
 try:
-    from .draft import draft_candidates
+    from .draft import draft_candidates, draft_with_pick
     from .jev_client import JevError, ask
     from .questions import JUDGE_QUESTIONS, build_rank_question, build_state, guidance_text
 except ImportError:
-    from draft import draft_candidates
+    from draft import draft_candidates, draft_with_pick
     from jev_client import JevError, ask
     from questions import JUDGE_QUESTIONS, build_rank_question, build_state, guidance_text
 
@@ -23,29 +23,61 @@ def _add_usage(total: dict, one: dict | None) -> None:
         total[k] = total.get(k, 0) + v if isinstance(v, (int, float)) else v
 
 
+def _draft_only(messages: list, relationship: str, provider: str, model: str | None,
+                base_url: str | None, timeout: float, context: int,
+                reply_to: str | None, style: str, thinking: bool) -> dict:
+    """不用 Jev 的那条链：起草模型一次调用既写候选又挑一条推荐，一个 Jev 请求都不发。
+    scores 全 0（界面上就不显示百分比），answers 空（判断摘要那块改显示 note）。"""
+    candidates, best_index, why = draft_with_pick(
+        messages, relationship, provider=provider, model=model, base_url=base_url,
+        timeout=timeout, keep=context, reply_to=reply_to, style=style, thinking=thinking)
+    if not candidates:
+        raise JevError("起草结果没有可用候选回复")
+    best_index = best_index if 0 <= best_index < len(candidates) else 0
+    return {
+        "candidates": candidates,
+        "best_index": best_index,
+        "best_reply": candidates[best_index],
+        "scores": [0.0, 0.0, 0.0],
+        "answers": {},
+        "usage": {},
+        "reply_to": reply_to,
+        "note": why or "没有 Jev 判断：候选和推荐都由起草模型直接给出。",
+    }
+
+
 def analyze(messages: list, relationship: str, model: str | None = None,
             timeout: float = 30, context: int = 10, provider: str = "deepseek",
             base_url: str | None = None, reply_to: str | None = None, style: str = "",
             thinking: bool = False, jev_provider: str = "openrouter",
-            jev_model: str | None = None, jev_base_url: str | None = None) -> dict:
+            jev_model: str | None = None, jev_base_url: str | None = None,
+            use_jev: bool = True) -> dict:
     """messages: [(from, text)] from ∈ {her, me}，最新一条在最后；
     群聊里可以带第三项 name（说这句话的人），单聊不带。
     context: 起草和判断各看最近多少条消息（用户设置里的「参考上下文」）。
     provider: 起草走哪家（core.providers.DRAFT_PROVIDERS），base_url 只有自定义来源要传。
     jev_provider / jev_model: 判断和排序走哪家、哪个模型（core.providers.JEV_PROVIDERS）。
     jev_base_url: 判断来源选「自定义」时要填的 SystemOne 地址。
+    use_jev: 要不要用 Jev 判断（设置里的开关）。False = 整条链不碰 Jev，起草模型自己写候选、
+    自己挑一条推荐（answers 空、scores 全 0，界面读 note 显示一句说明）。
     reply_to: 群聊里指定回复给谁；None = 正常回复。
     style: 用户自己描述的说话风格，只影响起草。
     thinking: 起草时是否开思考模式，只影响起草，默认关。
     model / jev_model = None 用该来源的默认模型。
 
-    返回 {candidates, best_index, best_reply, scores, answers, usage, reply_to}。
+    返回 {candidates, best_index, best_reply, scores, answers, usage, reply_to, note}。
     scores 是每条候选的胜出概率（0~1），取自 best_reply.probabilities，取不到记 0.0。
+    note 是「没有 Jev 判断」时给界面看的一句说明，有判断时是空串。
     只有对方最新说话时才有意义调它——是不是该触发由调用方判断（看 latest_from）。
 
     三段式（issue #4）：先让 Jev 答 7 道判断题，把判断当小抄喂给起草，最后 Jev 只排序。
-    判断那次挂了就退回老路：盲起草 + 判断和排序一次问完，行为跟以前一样。usage 是两次之和。
+    判断那次挂了就退回老路：盲起草 + 判断和排序一次问完，行为跟以前一样；连这次合问也挂了
+    （Jev 连不上时就这样）也不再把起草好的候选扔掉——第一条当推荐、note 里说明一句。
+    usage 是 Jev 那两次之和（不用 Jev 时是空 dict）。
     """
+    if not use_jev:
+        return _draft_only(messages, relationship, provider, model, base_url, timeout,
+                           context, reply_to, style, thinking)
     state = build_state(messages, relationship, keep=context, reply_to=reply_to)
     usage: dict = {}
     answers: dict = {}
@@ -69,14 +101,19 @@ def analyze(messages: list, relationship: str, model: str | None = None,
     questions = {} if judged else dict(JUDGE_QUESTIONS)
     if len(candidates) >= 2:  # 起草只给了 1 条就没什么可排的，判断题照问
         questions.update(build_rank_question(candidates))
+    note = ""
     if questions:
         try:
             second = ask(state, questions, timeout=timeout,
                          provider=jev_provider, model=jev_model, base_url=jev_base_url)
         except JevError:
-            if not judged:  # 老路只有这一次调用，挂了就是挂了
-                raise
-            second = {}  # 判断还在，只是没排上序：下面按第一条推荐
+            if not judged:
+                # 判断和合问都挂了（Jev 连不上时就这样）：别把起草好的候选扔了——
+                # 退回「不用 Jev」的样子，第一条当推荐，界面上说明一句
+                second = {}
+                note = "Jev 判断不可用：三条候选由起草模型直接给出，第一条是推荐。"
+            else:
+                second = {}  # 判断还在，只是没排上序：下面按第一条推荐
         answers = {**answers, **(second.get("answers") or {})}
         _add_usage(usage, second.get("usage"))
 
@@ -101,6 +138,7 @@ def analyze(messages: list, relationship: str, model: str | None = None,
         "answers": answers,
         "usage": usage,
         "reply_to": reply_to,
+        "note": note,
     }
 
 
@@ -115,4 +153,33 @@ if __name__ == "__main__":
             raise SystemExit("应当抛错")
         except JevError as e:
             assert "没有可用候选" in str(e)
+    # 不用 Jev：一次起草搞定，一个 Jev 请求都不该发；推荐哪条听起草模型的
+    with patch("__main__.ask", side_effect=AssertionError("不该调 Jev")), \
+         patch("__main__.draft_with_pick", return_value=(["甲", "乙", "丙"], 1, "顺口")):
+        r = analyze([("her", "hi")], "friends", use_jev=False)
+    assert r["candidates"] == ["甲", "乙", "丙"] and r["best_index"] == 1
+    assert r["best_reply"] == "乙" and r["answers"] == {} and r["scores"] == [0.0, 0.0, 0.0]
+    assert r["usage"] == {} and r["note"] == "顺口" and r["reply_to"] is None
+    # 不用 Jev 且候选被过滤光：同样抛 JevError
+    with patch("__main__.draft_with_pick", return_value=([], 0, "")):
+        try:
+            analyze([("her", "hi")], "friends", use_jev=False)
+            raise SystemExit("应当抛错")
+        except JevError as e:
+            assert "没有可用候选" in str(e)
+    # 不用 Jev 时起草模型没给理由：note 给一句兜底的说明
+    with patch("__main__.draft_with_pick", return_value=(["甲"], 0, "")):
+        assert "Jev" in analyze([("her", "hi")], "friends", use_jev=False)["note"]
+    # Jev 全挂（判断和合问都失败）：候选留着、第一条当推荐、note 说明，不再整个失败
+    with patch("__main__.ask", side_effect=JevError("down")), \
+         patch("__main__.draft_candidates", return_value=["甲", "乙"]):
+        r = analyze([("her", "hi")], "friends")
+    assert r["candidates"] == ["甲", "乙"] and r["best_index"] == 0
+    assert "Jev" in r["note"] and r["answers"] == {}
+    # 判断在、只有排序挂：判断照旧给出来，按第一条推荐，不用 note
+    with patch("__main__.ask", side_effect=[{"answers": {"true_intent": {"choice": "casual_chat"}}, "usage": {}},
+                                           JevError("rank down")]), \
+         patch("__main__.draft_candidates", return_value=["甲", "乙"]):
+        r = analyze([("her", "hi")], "friends")
+    assert r["best_index"] == 0 and r["note"] == "" and r["answers"]["true_intent"]["choice"] == "casual_chat"
     print("engine ok")
