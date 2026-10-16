@@ -126,12 +126,14 @@ def _model_ids(data) -> list[str]:
 
 def ask(state: dict, questions: dict, timeout: float = 20,
         provider: str = "openrouter", model: str | None = None,
-        base_url: str | None = None) -> dict:
+        base_url: str | None = None, retries: int = MAX_RETRIES) -> dict:
     """问 Jev 一轮判断，返回 {"answers": {名字: 答案}, "usage": {...}}。
 
     provider ∈ JEV_PROVIDERS（openrouter / opencode / typesafe / custom）；
     model=None 用该来源的默认模型；base_url 只有自定义来源要传。
     四条路返回的 dict 形状一模一样，429/529 都会退避重试。绝不打印或写出 key。
+    retries：重试上限。判断链两处都有兜底（退回盲起草 / 按第一条推荐），engine 传 1——
+    弱网下别让人在「正在整理」上干等满四轮退避，速降级到不用 Jev 的老路。
     """
     spec = JEV_PROVIDERS.get(provider) or JEV_PROVIDERS["openrouter"]
     key = _api_key(JEV_ENV)  # 四家共用同一把 key，换来源不用重填
@@ -141,7 +143,7 @@ def ask(state: dict, questions: dict, timeout: float = 20,
     url = spec.url or _systemone_url(base_url or "")
     if not url:
         raise JevError("自定义来源要填 Base URL（TypeSafe 兼容的 SystemOne 地址）")
-    return _ask_http(url, state, questions, key, model, timeout, spec.headers)
+    return _ask_http(url, state, questions, key, model, timeout, spec.headers, retries)
 
 
 def _answer(answer) -> dict:
@@ -176,9 +178,11 @@ def _ask_typesafe(state: dict, questions: dict, key: str, model: str, timeout: f
 
 
 def _ask_http(url: str, state: dict, questions: dict, key: str, model: str,
-              timeout: float, headers: dict | None = None) -> dict:
+              timeout: float, headers: dict | None = None,
+              retries: int = MAX_RETRIES) -> dict:
     """SystemOne 形状的 POST：OpenRouter 的 /api/alpha/decisions、OpenCode Zen 和自定义来源的
-    /v1/systemone 都是这一套。429/529 退避重试 3 次。
+    /v1/systemone 都是这一套。429/529 退避重试（上限 retries 次）。连接被拒/DNS 解析不了
+    不重试——服务挂了或断网时重试也只是白等，秒级报错让上层走兜底。
     headers 是来源要求的固定头（Zen 网关的 WAF 会 403 掉 urllib 默认 UA，必须带一个 curl/browser
     的 UA，见 providers.CURL_UA）；鉴权和 Content-Type 由这里覆盖，来源表改不了它们。"""
     payload = json.dumps(
@@ -194,7 +198,7 @@ def _ask_http(url: str, state: dict, questions: dict, key: str, model: str,
 
     last_status: int | None = None
     last_body = ""
-    for attempt in range(MAX_RETRIES + 1):
+    for attempt in range(retries + 1):
         req = urllib.request.Request(
             url,
             data=payload,
@@ -208,24 +212,28 @@ def _ask_http(url: str, state: dict, questions: dict, key: str, model: str,
         except urllib.error.HTTPError as exc:
             last_status = exc.code
             last_body = _error_body(exc)
-            if last_status in (429, 529) and attempt < MAX_RETRIES:
+            if last_status in (429, 529) and attempt < retries:
                 time.sleep(2**attempt)
                 continue
             readable = {
                 401: f"Jev HTTP 401: API key rejected. Check {JEV_ENV}.",
                 422: f"Jev HTTP 422: request body rejected. {last_body}",
-                429: f"Jev HTTP 429: rate limited after {MAX_RETRIES} retries. {last_body}",
-                529: f"Jev HTTP 529: provider overloaded after {MAX_RETRIES} retries. {last_body}",
+                429: f"Jev HTTP 429: rate limited after {retries} retries. {last_body}",
+                529: f"Jev HTTP 529: provider overloaded after {retries} retries. {last_body}",
             }.get(last_status, f"Jev HTTP {last_status}: {last_body}")
             raise JevError(readable, last_status) from None
         except (TimeoutError, socket.timeout) as exc:
-            if attempt < MAX_RETRIES:
+            if attempt < retries:
                 time.sleep(2**attempt)
                 continue
             raise JevError(f"Jev request timed out after {timeout}s") from exc
         except urllib.error.URLError as exc:
-            reason = redact_secrets(getattr(exc, "reason", exc))
-            if attempt < MAX_RETRIES:
+            reason = getattr(exc, "reason", exc)
+            if isinstance(reason, (ConnectionRefusedError, socket.gaierror)):
+                # 连接被拒（服务没在监听）/ DNS 解析不了：重试也是白搭，立刻报
+                raise JevError(f"Jev 连不上（{redact_secrets(str(reason))[:120]}）") from None
+            reason = redact_secrets(reason)
+            if attempt < retries:
                 time.sleep(2**attempt)
                 continue
             raise JevError(f"Jev request failed: {reason}") from None
@@ -450,6 +458,50 @@ if __name__ == "__main__":
             raise SystemExit("应当抛错")
         except JevError as e:
             assert "Base URL" in str(e)
+
+    # 连接被拒 / DNS 解析不了：一次都不重试——服务挂了或断网时白等退避没有意义
+    calls = {"n": 0}
+
+    def _refused(req, timeout=None):
+        calls["n"] += 1
+        raise urllib.error.URLError(ConnectionRefusedError())
+
+    with patch.object(urllib.request, "urlopen", _refused):
+        try:
+            ask({"chat": {}}, questions)
+            raise SystemExit("应当抛错")
+        except JevError as e:
+            assert "连不上" in str(e)
+    assert calls["n"] == 1
+
+    calls["n"] = 0
+
+    def _dns(req, timeout=None):
+        calls["n"] += 1
+        raise urllib.error.URLError(socket.gaierror("Name or service not known"))
+
+    with patch.object(urllib.request, "urlopen", _dns):
+        try:
+            ask({"chat": {}}, questions)
+            raise SystemExit("应当抛错")
+        except JevError as e:
+            assert "连不上" in str(e)
+    assert calls["n"] == 1
+
+    # retries 参数：判断链传 1，超时最多打两次就放手，别让用户干等满四轮
+    calls["n"] = 0
+
+    def _slow(req, timeout=None):
+        calls["n"] += 1
+        raise socket.timeout()
+
+    with patch.object(urllib.request, "urlopen", _slow):
+        try:
+            ask({"chat": {}}, questions, retries=1)
+            raise SystemExit("应当抛错")
+        except JevError as e:
+            assert "timed out" in str(e)
+    assert calls["n"] == 2
 
     # OpenRouter 路的列表是写死的，但 key 要过 auth/key 探测：mock urlopen 验两头
     def _fake_key_ok(req, timeout=None):

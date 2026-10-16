@@ -84,7 +84,8 @@ def analyze(messages: list, relationship: str, model: str | None = None,
     judged = False
     try:
         first = ask(state, dict(JUDGE_QUESTIONS), timeout=timeout,
-                    provider=jev_provider, model=jev_model, base_url=jev_base_url)
+                    provider=jev_provider, model=jev_model, base_url=jev_base_url,
+                    retries=1)  # 判断挂了有盲起草兜底：弱网别等满四轮退避
         answers = first.get("answers") or {}
         _add_usage(usage, first.get("usage"))
         judged = True
@@ -105,7 +106,8 @@ def analyze(messages: list, relationship: str, model: str | None = None,
     if questions:
         try:
             second = ask(state, questions, timeout=timeout,
-                         provider=jev_provider, model=jev_model, base_url=jev_base_url)
+                         provider=jev_provider, model=jev_model, base_url=jev_base_url,
+                         retries=1)  # 挂了也有「按第一条推荐」兜底：同样别干等
         except JevError:
             if not judged:
                 # 判断和合问都挂了（Jev 连不上时就这样）：别把起草好的候选扔了——
