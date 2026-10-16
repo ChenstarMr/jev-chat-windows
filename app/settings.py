@@ -12,6 +12,7 @@ import json
 import os
 import sys  # 只为下面这一处：打包后 __file__ 指向临时解包目录，config.json 得放在 exe 旁边才存得住
 
+from app import chatapps
 from core.providers import (CUSTOM, DRAFT_PROVIDERS, JEV_CUSTOM, JEV_ENV, JEV_PROVIDERS,
                             LEGACY, LLM_ENV)
 
@@ -101,6 +102,13 @@ def debug_view() -> bool:
     """调试视图：另开一个窗口实时画识别框。默认关，开了子进程才往队列里送帧。"""
     return bool(_read("debug_view", False))
 
+
+def app() -> str:
+    """要盯哪个聊天应用：auto = 按 app/chatapps.APPS 顺序先到先得（微信优先），
+    或指定某个应用的 key（wechat / kakaotalk）。认不出的值一律退回 auto。"""
+    v = str(_read("app") or "auto").strip().lower()
+    return v if v == "auto" or v in chatapps.APPS else "auto"
+
 def _read_env(env_name: str) -> str:
     """进程环境优先；没有就读注册表并带进进程环境，之后 core/ 里按 os.environ 读就有了。"""
     v = os.environ.get(env_name, "").strip()
@@ -172,7 +180,7 @@ def save(relationship_text: str | None = None, context_n: int | None = None, *,
          draft_base_url_text: str | None = None, reply_target_on: bool | None = None,
          style_text: str | None = None, thinking_on: bool | None = None,
          check_update_on: bool | None = None, debug_view_on: bool | None = None,
-         lang_text: str | None = None) -> None:
+         app_text: str | None = None, lang_text: str | None = None) -> None:
     """每个参数为空/None = 保留当前值。两把 key 写进程环境 + HKCU\\Environment，不写任何文件。"""
     jev = jev_provider_text if jev_provider_text in JEV_PROVIDERS else jev_provider()
     draft = draft_provider_text if draft_provider_text in DRAFT_PROVIDERS else draft_provider()
@@ -204,6 +212,7 @@ def save(relationship_text: str | None = None, context_n: int | None = None, *,
         "thinking": flag(thinking_on, thinking),
         "check_update": flag(check_update_on, check_update),
         "debug_view": flag(debug_view_on, debug_view),
+        "app": keep(app_text, "app") or "auto",
     }
     lang = _read("lang") if lang_text is None else lang_text.strip().lower()
     if lang is not None:

@@ -14,7 +14,7 @@ import time
 import traceback
 from collections import deque
 
-from app import settings, update, worker
+from app import chatapps, settings, update, worker
 from app.capture import find_chat_hwnd
 from app.fill import fill
 from app.overlay import Overlay
@@ -66,6 +66,12 @@ def spawn_worker():
     return p
 
 
+def want_app():
+    """设置里指定要盯的聊天应用；auto = None，按 app/chatapps.APPS 顺序先到先得（微信优先）。"""
+    want = settings.app()
+    return None if want == "auto" else chatapps.APPS.get(want)
+
+
 def set_debug(on):
     """调试视图开关：开 → 开窗 + 置位（子进程这才开始送帧，一帧 2~3MB）；关 → 清掉 + 收窗。"""
     global dbg
@@ -103,7 +109,7 @@ def on_toggle_capture(on):
         return
     if child is None:
         try:
-            state["hwnd"], found = find_chat_hwnd()
+            state["hwnd"], found = find_chat_hwnd(want=want_app())
             state["app"] = found.key
         except RuntimeError:
             state["retry_at"] = time.time() + 3  # 别每帧都枚举一遍窗口
@@ -112,6 +118,22 @@ def on_toggle_capture(on):
             return
         child = spawn_worker()
     capture_on.set()
+
+
+def on_app_changed():
+    """设置里换了要盯的聊天应用：正在采集就立刻换窗口重开，没在采就等下次开启。"""
+    global child
+    was_on = capture_on.is_set()
+    capture_on.clear()
+    if child is not None:
+        child.terminate()
+        child.join()
+        child = None
+    state["area"] = None
+    state["hwnd"] = None
+    state["retry_at"] = 0.0
+    if was_on:
+        on_toggle_capture(True)
 
 
 def analyze_bg(msgs, title, revision, reply_to=None):
@@ -256,7 +278,7 @@ def tick():
             # 开关开着但子进程没了（聊天窗口关了/还没开）：定期找一次，回来就自动接上
             state["retry_at"] = time.time() + 3
             try:
-                state["hwnd"], found = find_chat_hwnd()
+                state["hwnd"], found = find_chat_hwnd(want=want_app())
             except RuntimeError:
                 found = None  # 还没开：三秒后再看
             if found is not None:
@@ -302,10 +324,10 @@ if __name__ == "__main__":  # Windows 的 spawn 会让子进程重新执行本�
     child = dbg = None
     ov = Overlay(on_fill=fill_reply, on_toggle_capture=on_toggle_capture,
                  on_target_change=on_target_change, on_toggle_debug=set_debug,
-                 on_language_changed=on_language_changed,
+                 on_language_changed=on_language_changed, on_app_changed=on_app_changed,
                  result_of=lambda t: chats.get(t, {}).get("result"))
     try:
-        state["hwnd"], found = find_chat_hwnd()
+        state["hwnd"], found = find_chat_hwnd(want=want_app())
         state["app"] = found.key
     except RuntimeError:
         capture_on.set()  # 开关先开着：窗口一开 tick 里自动接上，不用人管

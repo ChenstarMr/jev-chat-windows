@@ -125,7 +125,8 @@ def main() -> int:
                      "draft_provider": "deepseek", "draft_model": "deepseek-flash",
                      "draft_base_url": "", "reply_target": True,
                      "style": "话少，基本不用标点，急了才发感叹号", "thinking": False,
-                     "check_update": True, "debug_view": args.state == "debug"}
+                     "check_update": True, "debug_view": args.state == "debug",
+                     "app": "auto", "lang": "zh"}
 
     def save_demo_settings(relationship_text=None, context_n=None, *, jev_provider_text=None,
                            jev_key_text=None, jev_model_text=None, jev_base_url_text=None,
@@ -133,7 +134,8 @@ def main() -> int:
                            draft_provider_text=None,
                            llm_key_text=None, draft_model_text=None, draft_base_url_text=None,
                            reply_target_on=None, style_text=None, thinking_on=None,
-                           check_update_on=None, debug_view_on=None):
+                           check_update_on=None, debug_view_on=None,
+                           app_text=None, lang_text=None):
         if relationship_text:
             demo_settings["relationship"] = relationship_text
         if context_n is not None:
@@ -152,6 +154,10 @@ def main() -> int:
                             ("use_jev", use_jev_on)):
             if value is not None:
                 demo_settings[name] = bool(value)
+        if app_text is not None:
+            demo_settings["app"] = app_text
+        if lang_text is not None:
+            demo_settings["lang"] = lang_text
 
     def fake_jev_models(provider, key, timeout=10, base_url=None):
         """演示不联网：给一小撮假模型，让「获取模型」按钮在本地也走得通。"""
@@ -187,6 +193,7 @@ def main() -> int:
         thinking=lambda: demo_settings["thinking"],
         check_update=lambda: demo_settings["check_update"],
         debug_view=lambda: demo_settings["debug_view"],
+        app=lambda: demo_settings["app"],
         save=save_demo_settings,
     ):
         from PySide6.QtCore import QTimer

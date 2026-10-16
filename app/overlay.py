@@ -19,7 +19,7 @@ from qfluentwidgets import (
     setCustomStyleSheet, setFont, setTheme, setThemeColor,
 )
 
-from app import i18n, settings
+from app import chatapps, i18n, settings
 from app.version import VERSION
 from core import jev_client, llm, providers
 from core.questions import CHOICE_LABELS
@@ -197,10 +197,11 @@ class _ReplyCard(_Surface):
 
 class Overlay:
     def __init__(self, on_fill, on_toggle_capture=None, on_target_change=None, result_of=None,
-                 on_toggle_debug=None, on_language_changed=None):
+                 on_toggle_debug=None, on_language_changed=None, on_app_changed=None):
         """result_of(会话名) → 那个会话上次的结果或 None；切着看别的会话时用它把旧结果放回来。
         on_target_change(会话名, 人名) → 用户在群里挑了回复对象。
-        on_toggle_debug(开不开) → 开关调试视图那个独立窗口。"""
+        on_toggle_debug(开不开) → 开关调试视图那个独立窗口。
+        on_app_changed() → 设置里换了要盯的聊天应用，采集侧立刻换窗口。"""
         self.app = QApplication.instance() or QApplication([])
         setTheme(Theme.LIGHT)
         setThemeColor(_GREEN, save=False)
@@ -209,6 +210,7 @@ class Overlay:
         self.on_target_change = on_target_change
         self.on_toggle_debug = on_toggle_debug
         self.on_language_changed = on_language_changed
+        self.on_app_changed = on_app_changed
         self.result_of = result_of
         self.cands = []
         self.cards = []
@@ -560,6 +562,20 @@ class Overlay:
             "另开一个窗口实时显示截到的画面和识别框：绿 = 我、蓝 = 对方、灰 = 过滤掉的灰字、"
             "红 = 当成图片丢掉、黄 = 小字丢掉。只在内存里画，不存图。"
         ))
+        app_row = QHBoxLayout()
+        app_row.addWidget(_tlabel("聊天应用", 13), 1)
+        self.appBox = ComboBox()
+        self.appBox.setMinimumWidth(0)
+        self._app_values = ["auto"] + [a.key for a in chatapps.APPS.values()]
+        for key in self._app_values:
+            self.appBox.addItem(T("自动") if key == "auto" else T(chatapps.APPS[key].label))
+        bind(self.appBox, "要盯的聊天应用", "setAccessibleName")
+        app_row.addWidget(self.appBox)
+        box.addLayout(app_row)
+        box.addWidget(self._hint(
+            "同时开着多个聊天软件时，指定要盯哪一个；选自动就按顺序认第一个。"
+            "保存后立即生效，正在采集就换到新窗口。"
+        ))
         body.addWidget(preference)
 
         models = _Surface()
@@ -824,6 +840,10 @@ class Overlay:
         for index, (name, _) in enumerate(_RELATIONSHIPS):
             self.relationshipBox.setItemText(index, T(name))
         self.relationshipBox.blockSignals(blocked)
+        blocked = self.appBox.blockSignals(True)
+        for index, key in enumerate(self._app_values):
+            self.appBox.setItemText(index, T("自动") if key == "auto" else T(chatapps.APPS[key].label))
+        self.appBox.blockSignals(blocked)
         self._refresh_history_text()
 
     def _load_settings(self):
@@ -845,6 +865,9 @@ class Overlay:
         self.thinkingSwitch.setChecked(settings.thinking())
         self.updateSwitch.setChecked(settings.check_update())
         self.set_debug_switch(settings.debug_view())  # 屏蔽信号地拨，别在加载时开关一遍窗口
+        want = settings.app()
+        self.appBox.setCurrentIndex(self._app_values.index(want) if want in self._app_values else 0)
+        self._loaded_app = want
         self._sync_model_fields()  # 上面屏蔽了信号，这里补一次
         self.settingsFeedback.hide()
 
@@ -884,6 +907,7 @@ class Overlay:
                     if jev_provider in providers.JEV_CUSTOM else None)
         draft_base = (self.draft.baseEdit.text().strip()
                       if draft_provider in providers.CUSTOM else None)
+        app_before = self._loaded_app
         try:
             settings.save(relationship, self.contextBox.value(),
                           jev_provider_text=jev_provider,
@@ -898,12 +922,15 @@ class Overlay:
                           reply_target_on=self.targetSwitch.isChecked(),
                           style_text=self.styleEdit.text().strip(),
                           thinking_on=self.thinkingSwitch.isChecked(),
-                          check_update_on=self.updateSwitch.isChecked())
+                          check_update_on=self.updateSwitch.isChecked(),
+                          app_text=self._app_values[max(0, self.appBox.currentIndex())])
         except Exception:
             self._settings_feedback("保存失败，请检查配置文件是否可写后重试。", error=True)
             return
         self._load_settings()
         self._render_targets()  # 开关刚改过，回到首页时这一行该显该藏得重算一次
+        if app_before != self._loaded_app and self.on_app_changed:
+            self.on_app_changed()  # 换了要盯的聊天应用：采集侧立刻换窗口
         self._settings_feedback("设置已保存，将用于下一次回复。")
         self.setupButton.hide()
         if not self.cands and not self._busy:
