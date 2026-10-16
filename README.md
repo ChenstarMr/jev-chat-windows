@@ -44,9 +44,11 @@
 
 设置页的「模型」卡片分两节，各填一把 key：
 
-1. **判断 · Jev** —— 判断意图、紧张度，并给三条候选排序。来源选 **OpenRouter**（默认，key 在
-   [openrouter.ai](https://openrouter.ai/) 申请）或 **TypeSafe 直连**（key 在
-   [console.typesafe.ai](https://console.typesafe.ai/) 申请）。填的是哪家的 key 看你上面选了哪家。
+1. **判断 · Jev** —— 判断意图、紧张度，并给三条候选排序。四家给的是同一个 Jev，选一个来源填它的
+   key：**OpenRouter**（默认，key 在 [openrouter.ai](https://openrouter.ai/) 申请）、
+   **OpenCode Zen**（key 在 [opencode.ai/zen](https://opencode.ai/zen) 申请）、**TypeSafe 直连**
+   （key 在 [console.typesafe.ai](https://console.typesafe.ai/) 申请），或**自定义**（自己填一个
+   TypeSafe 兼容地址 + 那把 key）。填的是哪家的 key 看你上面选了哪家。
 2. **起草 · 语言模型** —— 写那三条候选。默认 **DeepSeek 官网**直连，key 在
    [platform.deepseek.com](https://platform.deepseek.com/) 申请（很便宜，起草一次几厘钱）。
    换别家见下面的表，OpenAI / Anthropic / Gemini 三种接口都支持。
@@ -60,7 +62,8 @@
 DeepSeek 官方 API（`api.deepseek.com`）国内直连，起草基本就是一次 HTTP 请求的时间，体感差好几倍。
 所以起草默认就是它，不用改。
 
-判断那一步比起草轻得多，慢一点无所谓，默认走 OpenRouter 即可；嫌慢就把它也换成 TypeSafe 直连。
+判断那一步比起草轻得多，慢一点无所谓，默认走 OpenRouter 即可；嫌慢就把它也换成 TypeSafe 直连，
+或者 OpenCode Zen（同一个 Jev，Zen 那边还有一档限时免费的 `jev-1.13-free`，手打进模型框即可）。
 两把 key 都只进注册表，不落文件。
 
 **日常怎么用**
@@ -150,7 +153,8 @@ RapidOCR 自带的只有中英文模型，韩文整段都是乱码：同一个 K
   不夹带任何聊天内容；设置里「启动时检查更新」关掉就完全不发这个请求，源码直接跑（没有版本号）也
   不会发。
 
-什么会出网：判断（`JEV_API_KEY`）去你选的 OpenRouter 或 TypeSafe 直连；起草（`LLM_API_KEY`）发给你
+什么会出网：判断（`JEV_API_KEY`）去你选的 OpenRouter、OpenCode Zen、TypeSafe 直连或自定义地址；
+起草（`LLM_API_KEY`）发给你
 在设置里选的那家接口（DeepSeek 官网、OpenRouter、OpenAI、Moonshot、智谱、通义、硅基流动、
 OpenCode Go、Anthropic、Gemini，或者自填的 OpenAI 兼容 / Anthropic 兼容地址），加上启动时（可关）一次到
 GitHub 查版本号。**本项目没有任何自建服务器**，聊天内容只在触发分析的那一刻，发给你自己在设置里
@@ -186,7 +190,15 @@ WGC 截聊天窗口（GPU 合成窗口也能截，被遮挡也能截）
 | 来源 | 地址 | 默认模型 |
 | --- | --- | --- |
 | OpenRouter（默认） | `openrouter.ai/api/alpha/decisions` | `typesafe/jev-1.13` |
+| OpenCode Zen | `opencode.ai/zen/v1/systemone` | `jev-1.13`（`jev-1.13-free` 限时免费） |
 | TypeSafe 直连 | `api.typesafe.ai`（官方 `typesafe-sdk`） | `jev-latest` |
+| 自定义 | 自己填的 TypeSafe 兼容地址 | `jev-latest` |
+
+四家说的是同一套 SystemOne 协议（`POST {model, state, questions}` → `{answers, usage}`），换来源就是
+换地址、key 和模型 id，判断口径完全一样。「自定义」只填到域名就行（比如 `https://api.typesafe.ai`），
+程序自己补 `/v1/systemone`；直接把完整端点粘进去也认。OpenCode Zen 的网关会 403 掉 Python 默认 UA，
+所以那条路按来源表带了 `curl` 的 UA——自己改代码时别把这行删了。
+没有默认模型的来源（或想换 Zen 的免费档），在设置页直接手打模型 id 即可。
 
 **起草 3 条候选（key：`LLM_API_KEY`）**
 
@@ -297,7 +309,8 @@ pyinstaller --noconfirm --clean jev.spec
 | 群聊指定回复对象 | 开了群聊里才有「回复对象」那一行，候选针对 TA 写 | `config.json` → `reply_target`（默认关） |
 | 启动时检查更新 | 开了才在启动时查一次 GitHub 最新版本号，有新版本就在标题栏下面提示 | `config.json` → `check_update`（默认开） |
 | 调试视图 | 另开一个窗口实时显示截到的画面和识别框，看识别在哪一步认错。拨一下立刻生效，不用点保存；关掉那个窗口等于关掉开关 | `config.json` → `debug_view`（默认关） |
-| 判断 · 来源 | OpenRouter 还是 TypeSafe 直连 | `config.json` → `jev_provider`（默认 `openrouter`） |
+| 判断 · 来源 | OpenRouter / OpenCode Zen / TypeSafe 直连 / 自定义 | `config.json` → `jev_provider`（默认 `openrouter`） |
+| 判断 · Base URL | 只有「自定义」来源才出现这一行 | `config.json` → `jev_base_url` |
 | 判断 · 密钥 | 上面选哪家就填哪家的 key。已配置时留空 = 保留 | 注册表 `HKCU\Environment` → `JEV_API_KEY` |
 | 判断 · 模型 | 可手打，也可点「获取模型」拉列表挑 | `config.json` → `jev_model`（空 = 该来源默认） |
 | 起草 · 来源 | 上面那张表里的任意一家 | `config.json` → `draft_provider`（默认 `deepseek`） |
@@ -347,7 +360,7 @@ core/                   Jev 判断内核，平台无关，跟安卓原版同一�
   engine.py             唯一入口 analyze(messages, relationship) → 候选 + 排序 + 判断
   providers.py          两张来源表（判断 / 起草）：协议、地址、默认模型；纯数据，不认 key
   llm.py                三种协议的薄适配层，一律走官方 SDK：openai / anthropic / google-genai
-  jev_client.py         Jev 判断客户端：OpenRouter（urllib）/ TypeSafe 直连（typesafe-sdk）；脱敏、退避
+  jev_client.py         Jev 判断客户端：OpenRouter / OpenCode Zen / 自定义（手写 urllib）/ TypeSafe 直连（typesafe-sdk）；脱敏、退避
   questions.py          7 道判断题 + build_state() + build_rank_question() + 判断小抄 guidance_text() / 中文标签 CHOICE_LABELS
   draft.py              起草 3 条候选：拼提示词、解析、过滤、不足时追问补齐；调用走 llm.py
 tools/
@@ -399,6 +412,15 @@ config.json             你自己的设置，不进仓库（在 .gitignore 里�
 - **没有托盘**：关窗口就是退出（标题栏的「最小化」是收到任务栏，不是后台常驻）。
 
 ## 更新记录
+
+**v0.1.13**
+
+- 判断来源新增 **OpenCode Zen**（`opencode.ai/zen/v1/systemone`，默认 `jev-1.13`，也可手打
+  `jev-1.13-free` 用限时免费那档）和**自定义**（自己填 TypeSafe 兼容地址）两个选项；四家共用同一把
+  `JEV_API_KEY`，走的都是同一套 SystemOne 协议，判断口径不变
+- 设置页「判断 · Jev」也像起草那样多出一行 Base URL，只有选「自定义」时才显示；「获取模型」在
+  Zen 上会去问它的模型目录并只留 Jev，自定义来源则照填的地址问
+- Zen 网关会 403 掉 Python 默认 UA，手写 HTTP 那条路按来源表带上 `curl` 的 UA（OpenRouter 不用带）
 
 **v0.1.12**
 

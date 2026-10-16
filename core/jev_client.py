@@ -1,8 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Jev 判断 API 客户端：OpenRouter 或 TypeSafe 直连。
+"""Jev 判断 API 客户端：OpenRouter、OpenCode Zen、自定义、TypeSafe 直连。
 
-TypeSafe 直连走官方 `typesafe_sdk`；OpenRouter 这条是唯一自己拼 HTTP 的路——
-SDK 把路径写死成 `/v1/systemone`，打不到 OpenRouter 的 `/api/alpha/decisions`。
+四条路分两种：OpenRouter / OpenCode Zen / 自定义都是同一套 SystemOne 形状的 HTTP
+（POST {model, state, questions} → {answers, usage}），只是地址、key、模型 id 和固定头不同，
+由 core/providers.JEV_PROVIDERS 描述，这里手写 urllib 发；TypeSafe 直连走官方 `typesafe_sdk`
+（它把路径写死成 /v1/systemone，所以只有它用 SDK）。
+
 两条路返回同一个 dict 形状，engine 不关心跑的是哪条。key 只从环境变量读，绝不打进日志。
 """
 
@@ -17,10 +20,10 @@ import urllib.request
 from typing import NoReturn
 
 try:  # 当模块导入 / 当脚本直接跑 都能用
-    from .providers import (ENV_VARS, JEV_ENV, JEV_PROVIDERS, LEGACY,
+    from .providers import (ENV_VARS, JEV_ENV, JEV_PROVIDERS, LEGACY, OPENCODE_JEV_MODELS,
                             OPENROUTER_DECISIONS, OPENROUTER_KEY_URL, TYPESAFE_BASE)
 except ImportError:
-    from providers import (ENV_VARS, JEV_ENV, JEV_PROVIDERS, LEGACY,
+    from providers import (ENV_VARS, JEV_ENV, JEV_PROVIDERS, LEGACY, OPENCODE_JEV_MODELS,
                            OPENROUTER_DECISIONS, OPENROUTER_KEY_URL, TYPESAFE_BASE)
 
 MAX_RETRIES = 3
@@ -85,19 +88,60 @@ def _error_body(exc: urllib.error.HTTPError) -> str:
     return redact_secrets(raw)[:800]
 
 
+def _systemone_url(base: str) -> str:
+    """自定义来源的 Base URL → SystemOne 端点。填到 /systemone 为止就照用，只填到 /v1 就补
+    /systemone，只填到域名/前缀就补 /v1/systemone——这样 TypeSafe 那种 `https://api.typesafe.ai`
+    和 Zen 那种 `https://opencode.ai/zen` 都能直接粘。空串返回空串（调用方据此报「要填 Base URL」）。"""
+    url = (base or "").strip().rstrip("/")
+    if not url:
+        return ""
+    if url.endswith("/systemone"):
+        return url
+    return url + ("/systemone" if url.endswith("/v1") else "/v1/systemone")
+
+
+def _catalog_url(endpoint: str) -> str:
+    """SystemOne 端点 → 同一个网关的模型目录：把尾巴 /systemone 换成 /models。"""
+    return endpoint[: -len("/systemone")] + "/models" if endpoint.endswith("/systemone") \
+        else endpoint + "/models"
+
+
+def _model_ids(data) -> list[str]:
+    """模型目录的形状各家不完全一样：{"data":[{"id":…}]}（OpenAI 风格）/ {"models":[…]}
+    / 裸数组 / 纯字符串数组。认不出就返回空，让调用方去兜底。"""
+    if isinstance(data, dict):
+        data = data.get("data") or data.get("models") or []
+    if not isinstance(data, list):
+        return []
+    out = []
+    for item in data:
+        if isinstance(item, str):
+            out.append(item)
+        elif isinstance(item, dict):
+            value = item.get("id") or item.get("name") or item.get("model")
+            if isinstance(value, str):
+                out.append(value.removeprefix("models/"))
+    return out
+
+
 def ask(state: dict, questions: dict, timeout: float = 20,
-        provider: str = "openrouter", model: str | None = None) -> dict:
+        provider: str = "openrouter", model: str | None = None,
+        base_url: str | None = None) -> dict:
     """问 Jev 一轮判断，返回 {"answers": {名字: 答案}, "usage": {...}}。
 
-    provider ∈ JEV_PROVIDERS（openrouter / typesafe 直连）；model=None 用该来源的默认模型。
-    两条路返回的 dict 形状一模一样，429/529 都会退避重试。绝不打印或写出 key。
+    provider ∈ JEV_PROVIDERS（openrouter / opencode / typesafe / custom）；
+    model=None 用该来源的默认模型；base_url 只有自定义来源要传。
+    四条路返回的 dict 形状一模一样，429/529 都会退避重试。绝不打印或写出 key。
     """
     spec = JEV_PROVIDERS.get(provider) or JEV_PROVIDERS["openrouter"]
-    key = _api_key(JEV_ENV)  # 两家共用同一把 key，换来源不用重填
+    key = _api_key(JEV_ENV)  # 四家共用同一把 key，换来源不用重填
     model = model or spec.default
-    if provider == "typesafe":
+    if spec.kind == "sdk":
         return _ask_typesafe(state, questions, key, model, timeout)
-    return _ask_openrouter(state, questions, key, model, timeout)
+    url = spec.url or _systemone_url(base_url or "")
+    if not url:
+        raise JevError("自定义来源要填 Base URL（TypeSafe 兼容的 SystemOne 地址）")
+    return _ask_http(url, state, questions, key, model, timeout, spec.headers)
 
 
 def _answer(answer) -> dict:
@@ -131,25 +175,31 @@ def _ask_typesafe(state: dict, questions: dict, key: str, model: str, timeout: f
     }
 
 
-def _ask_openrouter(state: dict, questions: dict, key: str, model: str, timeout: float) -> dict:
-    """OpenRouter 的 /api/alpha/decisions，手写 urllib。429/529 退避重试 3 次。"""
+def _ask_http(url: str, state: dict, questions: dict, key: str, model: str,
+              timeout: float, headers: dict | None = None) -> dict:
+    """SystemOne 形状的 POST：OpenRouter 的 /api/alpha/decisions、OpenCode Zen 和自定义来源的
+    /v1/systemone 都是这一套。429/529 退避重试 3 次。
+    headers 是来源要求的固定头（Zen 网关的 WAF 会 403 掉 urllib 默认 UA，必须带一个 curl/browser
+    的 UA，见 providers.CURL_UA）；鉴权和 Content-Type 由这里覆盖，来源表改不了它们。"""
     payload = json.dumps(
         {"model": model, "state": state, "questions": questions},
         ensure_ascii=False,
     ).encode("utf-8")
+    request_headers = {
+        **(headers or {}),
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json; charset=utf-8",
+        "Accept": "application/json",
+    }
 
     last_status: int | None = None
     last_body = ""
     for attempt in range(MAX_RETRIES + 1):
         req = urllib.request.Request(
-            OPENROUTER_DECISIONS,
+            url,
             data=payload,
             method="POST",
-            headers={
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json; charset=utf-8",
-                "Accept": "application/json",
-            },
+            headers=request_headers,
         )
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -203,9 +253,40 @@ def _check_openrouter_key(key: str, timeout: float) -> None:
             f"取模型列表失败: {redact_secrets(getattr(exc, 'reason', exc))}") from None
 
 
-def list_models(provider: str, key: str, timeout: float = 10) -> list[str]:
-    """某家能用的 Jev 模型 id，去重排序。失败抛 JevError（设置页直接显示这句话）。"""
-    if provider == "typesafe":
+def _catalog_models(endpoint: str, key: str, timeout: float, headers: dict | None,
+                    only_jev: bool, fallback: tuple[str, ...] = ()) -> list[str]:
+    """问网关的模型目录（{endpoint 去掉 /systemone}/models）。only_jev 只留 id 里带 jev 的——
+    Zen 那种目录里混着整本对话模型，而这一格要的是判断模型。目录能连上但没列出 Jev 时用
+    fallback 兜底（官方文档写死的 id）；连不上就如实报错，别让坏 key 拖到第一次判断才暴露。"""
+    url = _catalog_url(endpoint)
+    try:
+        req = urllib.request.Request(url, headers={
+            **(headers or {}),
+            "Authorization": f"Bearer {key}",
+            "Accept": "application/json",
+        })
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as exc:
+        hint = {401: "密钥被拒", 403: "没有权限",
+                404: "这个地址没有模型目录，直接手打模型 id"}.get(exc.code, _error_body(exc)[:200])
+        raise JevError(f"取模型列表 HTTP {exc.code}: {hint}") from None
+    except (TimeoutError, socket.timeout):
+        raise JevError(f"取模型列表请求超时（{timeout}s）") from None
+    except urllib.error.URLError as exc:
+        raise JevError(f"取模型列表失败: {redact_secrets(getattr(exc, 'reason', exc))}") from None
+    ids = _model_ids(data)
+    if only_jev:
+        ids = [i for i in ids if "jev" in i.lower()]
+    return sorted(set(ids)) or list(fallback)
+
+
+def list_models(provider: str, key: str, timeout: float = 10,
+                base_url: str | None = None) -> list[str]:
+    """某家能用的 Jev 模型 id，去重排序。失败抛 JevError（设置页直接显示这句话）。
+    base_url 只有自定义来源要传。"""
+    spec = JEV_PROVIDERS.get(provider) or JEV_PROVIDERS["openrouter"]
+    if spec.kind == "sdk":
         import typesafe_sdk
 
         try:
@@ -214,11 +295,20 @@ def list_models(provider: str, key: str, timeout: float = 10) -> list[str]:
                 return sorted({m.name for m in client.models.list().models})
         except Exception as exc:
             _fail(exc, "取模型列表")
-    # OpenRouter 的 Jev 是 Decisions API 专属模型，不在 /api/v1/models 目录里
-    # （也没有列它的专用端点），列表按官方模型页写死，别名列排最前（永远指向最新版）。
-    # key 对不对由探测兜着，别让坏密钥等到第一次判断才暴露。
-    _check_openrouter_key(key, timeout)
-    return ["~typesafe/jev-latest", "typesafe/jev-1.13"]
+    if spec.url is None:  # 自定义来源：地址是用户填的，目录也照他的地址问
+        endpoint = _systemone_url(base_url or "")
+        if not endpoint:
+            raise JevError("自定义来源要填 Base URL（TypeSafe 兼容的 SystemOne 地址）")
+        return _catalog_models(endpoint, key, timeout, spec.headers, only_jev=False)
+    if provider == "openrouter":
+        # OpenRouter 的 Jev 是 Decisions API 专属模型，不在 /api/v1/models 目录里
+        # （也没有列它的专用端点），列表按官方模型页写死，别名列排最前（永远指向最新版）。
+        # key 对不对由探测兜着，别让坏密钥等到第一次判断才暴露。
+        _check_openrouter_key(key, timeout)
+        return ["~typesafe/jev-latest", "typesafe/jev-1.13"]
+    # OpenCode Zen：目录里是整本模型，只留 Jev；目录不列 Jev 就用文档里那两个 id 兜底
+    return _catalog_models(spec.url, key, timeout, spec.headers, only_jev=True,
+                           fallback=OPENCODE_JEV_MODELS)
 
 
 if __name__ == "__main__":
@@ -231,8 +321,10 @@ if __name__ == "__main__":
     import typesafe_sdk
 
     try:
+        from .providers import OPENCODE_JEV_MODELS, OPENCODE_SYSTEMONE
         from .questions import JUDGE_QUESTIONS, build_rank_question
     except ImportError:
+        from providers import OPENCODE_JEV_MODELS, OPENCODE_SYSTEMONE
         from questions import JUDGE_QUESTIONS, build_rank_question
 
     os.environ.pop(JEV_ENV, None)
@@ -317,6 +409,48 @@ if __name__ == "__main__":
     assert seen["url"] == OPENROUTER_DECISIONS
     assert seen["body"]["model"] == "typesafe/jev-1.13" and seen["body"]["questions"] == questions
 
+    # SystemOne 地址归一化：域名 / /v1 / 完整端点 三种写法都该落到同一个端点
+    assert _systemone_url("https://api.typesafe.ai") == "https://api.typesafe.ai/v1/systemone"
+    assert _systemone_url("https://opencode.ai/zen/") == "https://opencode.ai/zen/v1/systemone"
+    assert _systemone_url("https://x/v1") == "https://x/v1/systemone"
+    assert _systemone_url(OPENCODE_SYSTEMONE) == OPENCODE_SYSTEMONE
+    assert _systemone_url("") == "" and _systemone_url("   ") == ""
+    assert _catalog_url(OPENCODE_SYSTEMONE) == "https://opencode.ai/zen/v1/models"
+    # 各家目录的形状不一样，认不出的一律返回空（调用方去兜底）
+    assert _model_ids({"data": [{"id": "models/a"}, {"id": "b"}]}) == ["a", "b"]
+    assert _model_ids({"models": [{"name": "c"}]}) == ["c"]
+    assert _model_ids(["d", {"model": "e"}]) == ["d", "e"]
+    assert _model_ids("nope") == [] and _model_ids({}) == []
+
+    # OpenCode Zen：同一套 body，但打 Zen 的 /v1/systemone，并且必须带上绕 WAF 的 UA
+    def _fake_zen(req, timeout=None):
+        seen["zen_url"], seen["zen_headers"] = req.full_url, dict(req.headers)
+        seen["zen_body"] = json.loads(req.data.decode("utf-8"))
+        return io.BytesIO(json.dumps(body).encode("utf-8"))
+
+    with patch.object(urllib.request, "urlopen", _fake_zen):
+        assert ask({"chat": {}}, questions, provider="opencode") == body
+    assert seen["zen_url"] == OPENCODE_SYSTEMONE
+    assert seen["zen_body"]["model"] == "jev-1.13"  # 该来源的默认模型
+    assert seen["zen_body"]["questions"] == questions
+    assert seen["zen_headers"]["User-agent"] == "curl/8.9.1"  # urllib 会把 UA 键首字母大写
+    assert seen["zen_headers"]["Authorization"] == "Bearer ts-key"
+    assert seen["zen_headers"]["Content-type"] == "application/json; charset=utf-8"
+
+    # 自定义来源：地址用户填（只填到域名也认），模型不给就用该来源的默认值
+    with patch.object(urllib.request, "urlopen", _fake_zen):
+        assert ask({"chat": {}}, questions, provider="custom",
+                   base_url="https://my-gw.example", model="my-jev") == body
+    assert seen["zen_url"] == "https://my-gw.example/v1/systemone"
+    assert seen["zen_body"]["model"] == "my-jev"
+    assert "User-agent" not in seen["zen_headers"]  # 那个 UA 是 Zen 网关专属，别带给别人
+    with patch.object(urllib.request, "urlopen", _fake_zen):
+        try:
+            ask({"chat": {}}, questions, provider="custom")
+            raise SystemExit("应当抛错")
+        except JevError as e:
+            assert "Base URL" in str(e)
+
     # OpenRouter 路的列表是写死的，但 key 要过 auth/key 探测：mock urlopen 验两头
     def _fake_key_ok(req, timeout=None):
         seen["key_url"] = req.full_url
@@ -350,6 +484,39 @@ if __name__ == "__main__":
             raise SystemExit("应当抛错")
         except JevError as e:
             assert "HTTP 429" in str(e) and "rate limited" in str(e)
+
+    # OpenCode Zen / 自定义的模型目录：都是 {端点去掉 /systemone}/models
+    def _catalog(payload):
+        def _open(req, timeout=None):
+            seen["cat_url"], seen["cat_auth"] = req.full_url, req.headers.get("Authorization")
+            return io.BytesIO(json.dumps(payload).encode("utf-8"))
+        return _open
+
+    with patch.object(urllib.request, "urlopen",
+                      _catalog({"data": [{"id": "gpt-5.5"}, {"id": "jev-1.13"}]})):
+        assert list_models("opencode", "zen-key") == ["jev-1.13"]  # 只留 Jev
+    assert seen["cat_url"] == "https://opencode.ai/zen/v1/models"
+    assert seen["cat_auth"] == "Bearer zen-key"
+    # 目录连上了但没列 Jev：用官方文档里那两个 id 兜底，别让这一格空着
+    with patch.object(urllib.request, "urlopen", _catalog({"data": [{"id": "gpt-5.5"}]})):
+        assert list_models("opencode", "zen-key") == list(OPENCODE_JEV_MODELS)
+    # 自定义来源照用户填的地址问，不筛 Jev
+    with patch.object(urllib.request, "urlopen", _catalog({"data": [{"id": "b"}, {"id": "a"}]})):
+        assert list_models("custom", "k", base_url="https://my-gw.example") == ["a", "b"]
+    assert seen["cat_url"] == "https://my-gw.example/v1/models"
+
+    def _catalog_404(req, timeout=None):
+        raise urllib.error.HTTPError("https://x/models", 404, "Not Found", {}, io.BytesIO(b"{}"))
+
+    # 目录连不上就如实报错（坏 key 得当场暴露，别静默兜底），自定义再提示可以手打模型 id
+    for provider, base, wanted in (("opencode", None, "404"),
+                                   ("custom", "https://my-gw.example", "手打模型 id")):
+        with patch.object(urllib.request, "urlopen", _catalog_404):
+            try:
+                list_models(provider, "k", base_url=base)
+                raise SystemExit("应当抛错")
+            except JevError as e:
+                assert wanted in str(e), str(e)
 
     assert redact_secrets("key=ts-key or-key") == "key=[REDACTED] [REDACTED]"
     print("jev_client ok")

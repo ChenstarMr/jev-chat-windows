@@ -115,13 +115,15 @@ def main() -> int:
     demo_settings = {"relationship": "friends", "context": 10,
                      "jev_key": configured, "llm_key": configured,
                      "jev_provider": "openrouter", "jev_model": "typesafe/jev-1.13",
+                     "jev_base_url": "",
                      "draft_provider": "deepseek", "draft_model": "deepseek-flash",
                      "draft_base_url": "", "reply_target": True,
                      "style": "话少，基本不用标点，急了才发感叹号", "thinking": False,
                      "check_update": True, "debug_view": args.state == "debug"}
 
     def save_demo_settings(relationship_text=None, context_n=None, *, jev_provider_text=None,
-                           jev_key_text=None, jev_model_text=None, draft_provider_text=None,
+                           jev_key_text=None, jev_model_text=None, jev_base_url_text=None,
+                           draft_provider_text=None,
                            llm_key_text=None, draft_model_text=None, draft_base_url_text=None,
                            reply_target_on=None, style_text=None, thinking_on=None,
                            check_update_on=None, debug_view_on=None):
@@ -130,6 +132,7 @@ def main() -> int:
         if context_n is not None:
             demo_settings["context"] = context_n
         for name, value in (("jev_provider", jev_provider_text), ("jev_model", jev_model_text),
+                            ("jev_base_url", jev_base_url_text),
                             ("draft_provider", draft_provider_text), ("draft_model", draft_model_text),
                             ("draft_base_url", draft_base_url_text), ("style", style_text)):
             if value is not None:
@@ -142,7 +145,7 @@ def main() -> int:
             if value is not None:
                 demo_settings[name] = bool(value)
 
-    def fake_jev_models(provider, key, timeout=10):
+    def fake_jev_models(provider, key, timeout=10, base_url=None):
         """演示不联网：给一小撮假模型，让「获取模型」按钮在本地也走得通。"""
         return (["typesafe/jev-1.13"] if provider == "openrouter"
                 else ["jev-1.13.0", "jev-latest", "jev-preview"])
@@ -165,6 +168,7 @@ def main() -> int:
         context=lambda: demo_settings["context"],
         jev_provider=lambda: demo_settings["jev_provider"],
         jev_model=lambda: demo_settings["jev_model"],
+        jev_base_url=lambda: demo_settings["jev_base_url"],
         draft_provider=lambda: demo_settings["draft_provider"],
         draft_model=lambda: demo_settings["draft_model"],
         draft_base_url=lambda: demo_settings["draft_base_url"],
