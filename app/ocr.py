@@ -167,7 +167,11 @@ class Reader:
         """画面往哪边挪：整段内容上移 = 在往新的方向走（新消息把旧的顶上去）；
         下移 = 用户往上翻，画面停在旧内容上。中位数抹掉个别行的抖动，±3px 以内当没动
         （动图表情每帧都在变，但同一行不会跳位置）。整段对不上（切会话、拖滚动条跳了很远）
-        就沿用上次的判断——只有一种情况要纠正：最新那条又出现在画面里，说明已经回到最新了。"""
+        就沿用上次的判断。
+
+        最后报出去的那条又出现在画面里 = 已经回到最新（自己翻回来、拖滚动条跳回来都算），
+        这时必须无条件自愈：一直压着不报，她的新消息就漏了。而且它出现在画面里就说明至少
+        有一行是"已知"的，靠已知行划出的下边界本来就挡得住旧消息，不用再压。"""
         shifts = sorted(cy - py for py, cy in self._align(lines, self.last_lines))
         if shifts:
             shift = shifts[len(shifts) // 2]
@@ -175,10 +179,10 @@ class Reader:
                 self.view_back = True
             elif shift < -3:
                 self.view_back = False
-        elif self.anchor and any(w == self.anchor[0] and similar(t, self.anchor[1])
-                                 for w, n, t, y in lines):
-            self.view_back = False
         self.last_lines = [(w, t, y) for w, n, t, y in lines]
+        if self.view_back and self.anchor and any(
+                w == self.anchor[0] and similar(t, self.anchor[1]) for w, n, t, y in lines):
+            self.view_back = False
 
     def new_lines(self, lines):
         """去重（滚动不重复）→ 这一帧里真正新出现的 [(who, name, text)]。
@@ -224,12 +228,15 @@ if __name__ == "__main__":
     assert r.new_lines(_lines(("me", "在的", 80), ("her", "晚上吃啥", 180))) == \
         [("her", None, "晚上吃啥")]
     assert r.view_back is False
-    # 往上翻看历史：内容整体下移 → 一条都不报（报了就会按到达顺序塞进记录，顺序全乱）
+    # 往上翻看历史：内容整体下移 → 一条都不报（报了就会按到达时间塞进记录，顺序全乱）。
+    # 这一帧里最后报出去的那条还在画面上，靠已知行划的边界本来就挡住了，所以先不压。
     assert r.new_lines(_lines(("her", "早", 200), ("me", "在的", 300),
                               ("her", "晚上吃啥", 400))) == []
+    # 继续往上翻，最新那条翻出画面了：进入「停在旧内容上」，这段一律不报
+    assert r.new_lines(_lines(("her", "昨天那事", 150), ("her", "早", 250))) == []
     assert r.view_back is True
     # 停在旧内容上时继续翻：还是不报，但看到的都记进 seen 了
-    assert r.new_lines(_lines(("her", "昨天那事", 150), ("her", "早", 250))) == []
+    assert r.new_lines(_lines(("her", "前天", 120), ("her", "昨天那事", 220))) == []
     # 翻回底部：整段上移 → 恢复上报，翻过的那几条不重报
     assert r.new_lines(_lines(("me", "在的", 80), ("her", "晚上吃啥", 180))) == []
     assert r.view_back is False
