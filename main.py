@@ -26,7 +26,7 @@ from app.i18n import T
 # 只是缓冲区，实际喂模型几条由设置里的「参考上下文」决定
 # senders：这个群里发过言的人，去重、最近的排最前；target：用户挑的回复对象（None = 跟着最近那个走）
 chats = {}
-state = {"area": None, "busy": False, "rerun": None, "hwnd": None, "chat": ""}
+state = {"area": None, "busy": False, "rerun": {}, "hwnd": None, "chat": ""}
 results = queue.Queue()
 update_result = queue.Queue()  # 独立小队列，别跟 results 的 (kind, r, title, revision) 形状搅在一起
 
@@ -159,7 +159,7 @@ def on_target_change(title, name):
     if not any(m[0] == "her" for m in msgs):
         return
     if state["busy"]:
-        state["rerun"] = (title, msgs)
+        state["rerun"][title] = msgs  # 按会话各存一份：别的会话顶不掉它
         ov.set_busy(True)
     else:
         start_analyze(title, msgs)
@@ -203,7 +203,7 @@ def drain():
             state["area"] = None
             for c in chats.values():  # 在跑的分析作废，回来的结果不再往界面上贴
                 c["rev"] += 1
-            state["rerun"] = None
+            state["rerun"].clear()
             ov.invalidate_replies()
             ov.set_busy(False)
             ov.set_capture(False, msg[1])
@@ -230,14 +230,15 @@ def drain():
         if new[-1][0] == "her":  # 只有对方最新说话才值得分析
             msgs = list(chat["history"])
             if state["busy"]:
-                state["rerun"] = (title, msgs)
+                state["rerun"][title] = msgs  # 按会话各存一份，别的会话的新消息顶不掉它
                 ov.set_busy(True)
             else:
                 start_analyze(title, msgs)
-        else:
-            state["rerun"] = None
-            ov.set_busy(False)
-            ov.set_status("你已回复，等待对方的新消息")
+        else:  # 这个会话轮到我说话了：它的待重跑作废（已经回了，不用再生成）
+            state["rerun"].pop(title, None)
+            if title == ov.current_chat():  # 别的会话你回了话，别动这边正在看的状态行
+                ov.set_busy(False)
+                ov.set_status("你已回复，等待对方的新消息")
 
 
 def tick():
@@ -249,14 +250,13 @@ def tick():
         while not results.empty():
             kind, r, title, revision = results.get()
             state["busy"] = False
-            if state["rerun"]:  # 分析期间又来了新消息，接着跑最新的
-                (t, msgs), state["rerun"] = state["rerun"], None
-                start_analyze(t, msgs)
+            pending = state["rerun"].pop(title, None)
+            if pending:  # 这个会话分析期间又来了新消息：旧结果直接作废，接着跑最新的
+                start_analyze(title, pending)
                 continue
             if revision != chat_of(title)["rev"]:  # 这个会话后来又说话了，这份结果过期了
                 ov.set_busy(False)
-                continue
-            if kind == "ok":
+            elif kind == "ok":
                 chat_of(title)["result"] = r  # 先存着；正看着这个会话才立刻贴上去
                 if title == ov.current_chat():
                     ov.show(r)
@@ -266,6 +266,10 @@ def tick():
                 ov.set_busy(False)
                 ov.set_status("生成失败，请检查网络和服务设置；新消息到来后会重试。", "error")
                 ov.log(r)
+        if state["rerun"] and not state["busy"]:
+            # 别的会话还压着重跑没跑：现在闲下来了，按会话接着跑
+            t = next(iter(state["rerun"]))
+            start_analyze(t, state["rerun"].pop(t))
     except Exception:
         traceback.print_exc()  # 一帧出错不退出
     ov.after(50, tick)
