@@ -879,16 +879,21 @@ class Overlay:
                 self._settings_feedback(lambda: T("{name} 请先获取并选择一个模型。").format(name=name), error=True)
                 group.modelBox.setFocus()
                 return
+        # 非自定义来源传 None（= 保留已存的值）：不然切走自定义来源、再保存一次，就把用户填过的地址清空了
+        jev_base = (self.jev.baseEdit.text().strip()
+                    if jev_provider in providers.JEV_CUSTOM else None)
+        draft_base = (self.draft.baseEdit.text().strip()
+                      if draft_provider in providers.CUSTOM else None)
         try:
             settings.save(relationship, self.contextBox.value(),
                           jev_provider_text=jev_provider,
                           jev_key_text=self.jev.keyEdit.text().strip() or None,
                           jev_model_text=self.jev.modelBox.text().strip(),
-                          jev_base_url_text=self.jev.baseEdit.text().strip(),
+                          jev_base_url_text=jev_base,
                           draft_provider_text=draft_provider,
                           llm_key_text=self.draft.keyEdit.text().strip() or None,
                           draft_model_text=self.draft.modelBox.text().strip(),
-                          draft_base_url_text=self.draft.baseEdit.text().strip(),
+                          draft_base_url_text=draft_base,
                           reply_target_on=self.targetSwitch.isChecked(),
                           style_text=self.styleEdit.text().strip(),
                           thinking_on=self.thinkingSwitch.isChecked(),

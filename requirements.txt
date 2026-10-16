@@ -3,6 +3,7 @@ rapidocr-onnxruntime>=1.4,<2  # offline Chinese OCR; 1.2.x rejects det_limit_* c
 numpy                         # frames are numpy arrays; chat-area detection is all numpy
 windows-capture               # Windows Graphics Capture, captures GPU-composited windows
 PySide6-Fluent-Widgets        # overlay UI (pulls in PySide6)
+PySide6>=6.10,<6.12           # do NOT let this float: 6.12.0 regressed QAbstractSpinBox layout, so qfluentwidgets' SpinBox edit field collapses to 1px - the "reference context" box renders blank and cannot be typed into. 6.10.3 and 6.11.2 verified fine; re-test that box before lifting the cap.
 pillow                        # only for the synthetic images in probe/
 
 # model SDKs: one official client per protocol, no hand-written HTTP (see core/llm.py)
