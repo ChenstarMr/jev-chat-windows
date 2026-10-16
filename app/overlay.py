@@ -197,13 +197,11 @@ class _ReplyCard(_Surface):
 
 class Overlay:
     def __init__(self, on_fill, on_toggle_capture=None, on_target_change=None, result_of=None,
-                 on_toggle_debug=None, on_language_changed=None, on_app_changed=None,
-                 on_reset_chat=None):
+                 on_toggle_debug=None, on_language_changed=None, on_app_changed=None):
         """result_of(会话名) → 那个会话上次的结果或 None；切着看别的会话时用它把旧结果放回来。
         on_target_change(会话名, 人名) → 用户在群里挑了回复对象。
         on_toggle_debug(开不开) → 开关调试视图那个独立窗口。
-        on_app_changed() → 设置里换了要盯的聊天应用，采集侧立刻换窗口。
-        on_reset_chat(会话名) → 「重新收集」：清空这个会话的记录，让采集侧重读一遍当前画面。"""
+        on_app_changed() → 设置里换了要盯的聊天应用，采集侧立刻换窗口。"""
         self.app = QApplication.instance() or QApplication([])
         setTheme(Theme.LIGHT)
         setThemeColor(_GREEN, save=False)
@@ -213,7 +211,6 @@ class Overlay:
         self.on_toggle_debug = on_toggle_debug
         self.on_language_changed = on_language_changed
         self.on_app_changed = on_app_changed
-        self.on_reset_chat = on_reset_chat
         self.result_of = result_of
         self.cands = []
         self.cards = []
@@ -451,18 +448,10 @@ class Overlay:
         self.referenceNote.hide()
         body.addWidget(self.referenceNote)
 
-        history_row = QHBoxLayout()
-        history_row.setSpacing(8)
         self.historyButton = bind(PushButton(FIF.HISTORY, ""), "聊天记录")
         self.historyButton.clicked.connect(self._toggle_history)
         bind(self.historyButton, "展开或收起聊天记录", "setAccessibleName")
-        history_row.addWidget(self.historyButton, 1)
-        self.resetButton = bind(PushButton(FIF.SYNC, ""), "重新收集")
-        bind(self.resetButton, "清空这个会话的记录，重新读一遍聊天窗口里现在的内容", "setToolTip")
-        bind(self.resetButton, "清空这个会话的记录并重新收集", "setAccessibleName")
-        self.resetButton.clicked.connect(self._reset_chat)
-        history_row.addWidget(self.resetButton)
-        body.addLayout(history_row)
+        body.addWidget(self.historyButton)
         self.feed = PlainTextEdit()
         self.feed.setReadOnly(True)
         bind(self.feed, "识别到的聊天内容会显示在这里", "setPlaceholderText")
@@ -1114,31 +1103,6 @@ class Overlay:
     def _toggle_history(self):
         self.feed.setVisible(self.feed.isHidden())
         self._history_title()
-
-    def _reset_chat(self):
-        """「重新收集」：把正在看的这个会话的记录清掉、让采集侧重读一遍当前画面。
-        清账和重读都在父进程那边（要跟子进程打招呼），这里只把「看的是哪个会话」报上去。"""
-        if not self._shown:
-            self.set_status("还没识别到会话，等聊天窗口的会话名读出来再试", "warning")
-            return
-        if self.on_reset_chat:
-            self.on_reset_chat(self._shown)
-
-    def clear_chat(self, title):
-        """清掉一个会话的记录：聊天记录、条数、对方最近说、回复对象，正看着它就一起清干净。
-        只动这一个会话的账，别的会话切过去还在。"""
-        self.feeds.pop(title, None)
-        self.counts.pop(title, None)
-        self.hers.pop(title, None)
-        self.targets.pop(title, None)
-        if title != self._shown:
-            return
-        self._feed_entries = []
-        self._refresh_history_text()
-        self.context.hide()
-        self._history_title()
-        self._render_targets()
-        self.show_cached(None)  # 连同上次的建议一起清掉，回到空态
 
     def _history_title(self):
         action = "展开聊天记录" if self.feed.isHidden() else "收起聊天记录"

@@ -41,28 +41,6 @@ def _confirm_title(title, name, readers, pending):
     return title, (name, tries), False
 
 
-def _handle_cmds(cmd_q, readers, q):
-    """父进程发来的控制命令，目前只有一条：清空某个会话的去重状态、重新收集。
-    丢掉那个会话的 Reader（下次读到它时新建一套空账），下一帧就把画面上现有的消息当新的重报一遍；
-    会话名传空 = 所有会话都重来。执行完回一条 ("reset_done", 会话名)——父进程等到它才清记录：
-    队列先入先出，这条之前的旧帧都排在它前面，不会「刚清完又被旧帧填回来」。"""
-    if cmd_q is None:
-        return
-    while True:
-        try:
-            cmd = cmd_q.get_nowait()
-        except Empty:
-            return
-        if cmd[0] != "reset":
-            continue
-        title = cmd[1]
-        if title:
-            readers.pop(title, None)
-        else:
-            readers.clear()
-        q.put(("reset_done", title or ""))
-
-
 def _handle_verify(verify_q, cap, app, q):
     """「填入」前的现场核对：父进程问「现在开的是哪个会话」，拿最新一帧重新认一遍
     会话名和消息区，从 q 回 ("verified", id, 想填的会话名, 现读的会话名, 现在的消息区)。
@@ -97,12 +75,11 @@ def _packet(full, area, title, reader, lines):
             "ocr_ms": reader.last_ms if reader else 0, "ts": time.time()}
 
 
-def run(q, hwnd, enabled, debug_on, app_key=None, verify_q=None, cmd_q=None):
+def run(q, hwnd, enabled, debug_on, app_key=None, verify_q=None):
     """enabled 置位=采集，清掉=暂停。暂停时停掉 WGC 会话（Windows 那圈黄色采集边框也跟着没了），
     恢复时重开一个；readers 一直留着，去重状态不丢，恢复后不会把屏幕上的旧消息再报一遍。
     debug_on 置位才往队列里送整帧（一帧 2~3MB），关着一点额外活都不干。
-    verify_q 是「填入前的现场核对」请求队列：每圈开头先答掉，别让父进程干等。
-    cmd_q 是父进程的控制命令（清空记录、重新收集）：同样每圈开头先处理掉。"""
+    verify_q 是「填入前的现场核对」请求队列：每圈开头先答掉，别让父进程干等。"""
     ctypes.windll.user32.SetProcessDPIAware()
     app = chatapps.get(app_key)
     cap = None
@@ -116,14 +93,12 @@ def run(q, hwnd, enabled, debug_on, app_key=None, verify_q=None, cmd_q=None):
     while True:
         if verify_q is not None:
             _handle_verify(verify_q, cap, app, q)  # cap=None（暂停中）也答：父进程按老路直接填
-        if cmd_q is not None:
-            _handle_cmds(cmd_q, readers, q)  # 暂停中也要答：清记录不该等采集恢复
         if not enabled.is_set():
             if cap is not None:
                 cap.stop()
                 cap = None
                 q.put(("paused",))
-            enabled.wait(0.2)  # 超时轮询：暂停时也得收得到控制命令（上面那两行每 200ms 走一遍）
+            enabled.wait()
             continue
         if cap is None:
             try:
@@ -226,16 +201,4 @@ if __name__ == "__main__":
     vq.put((8, "某会话"))
     _handle_verify(vq, _Cap(None), chatapps.DEFAULT, oq)
     assert oq.get_nowait() == ("verified", 8, "某会话", "", None)
-    # 「清空记录、重新收集」：丢掉那个会话的去重状态，回执带上会话名；名字传空 = 全部会话重来
-    cq, rq = _queue.Queue(), _queue.Queue()
-    readers = {"甲": object(), "乙": object()}
-    _handle_cmds(cq, readers, rq)
-    assert rq.empty() and set(readers) == {"甲", "乙"}  # 没命令时别吭声、别乱清
-    cq.put(("reset", "甲"))
-    _handle_cmds(cq, readers, rq)
-    assert set(readers) == {"乙"} and rq.get_nowait() == ("reset_done", "甲")
-    cq.put(("reset", ""))
-    _handle_cmds(cq, readers, rq)
-    assert readers == {} and rq.get_nowait() == ("reset_done", "")
-    _handle_cmds(None, readers, rq)  # 老调用方不带 cmd_q 也不能炸
     print("worker._confirm_title ok")

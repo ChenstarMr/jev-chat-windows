@@ -31,11 +31,7 @@ chats = {}
 state = {"area": None, "busy": False, "rerun": {}, "retry_at": 0.0, "hwnd": None, "chat": ""}
 results = queue.Queue()
 verify_q = multiprocessing.Queue()  # 填入前的现场核对请求：父进程问「现在开的是谁」，子进程拿最新帧答
-cmd_q = multiprocessing.Queue()  # 控制命令（清空记录、重新收集）：父进程发，子进程丢掉去重状态后回执
 pending_fills = {}  # {核对 id: (要填的文本, 发起时刻)}：核对通过才真填；对不上/超时就作废
-pending_reset = {}  # {会话名: 发起时刻}：等子进程确认丢掉去重状态再清记录，免得清完又被旧帧填回来
-resync = set()  # {会话名}：子进程重开后这些会话的记录要按画面重建——新子进程去重状态是空的，
-                # 第一帧整屏重读，不重建就会把画面上已有的消息再收一遍
 _fill_seq = itertools.count(1)
 update_result = queue.Queue()  # 独立小队列，别跟 results 的 (kind, r, title, revision) 形状搅在一起
 
@@ -88,47 +84,13 @@ def fill_reply(text):
     _fill_now(text)
 
 
-def clear_chat(title):
-    """把这个会话的记录清干净：历史、候选、发言人、待重跑，界面上那份也跟着清。
-    只动这一个会话，别的会话的记录不受影响。rev 加一：清空前发出去的分析回来也贴不上来了。"""
-    chat = chat_of(title)
-    chat["history"].clear()
-    chat["result"] = None
-    chat["rev"] += 1
-    chat["target"] = None
-    chat["senders"].clear()
-    state["rerun"].pop(title, None)
-    ov.clear_chat(title)
-
-
-def reset_chat(title):
-    """「重新收集」：清掉这个会话的记录，再让采集侧丢掉去重状态，下一帧把画面上现有的消息
-    当新的重收一遍——滚太快记乱了时手动重来一次（不重启、不重开窗口）。
-    子进程活着就先问一声、等它的回执再清：队列先入先出，回执排在旧帧后面，不会清完又被旧帧填回来。
-    没在采（暂停/没窗口/子进程死了）就直接清，等窗口回来自己重新收。"""
-    title = title or ov.current_chat()
-    if not title:
-        ov.set_status("还没识别到会话，等聊天窗口的会话名读出来再试", "warning")
-        return
-    if child is not None:
-        pending_reset[title] = time.time()
-        cmd_q.put(("reset", title))
-        ov.set_status("正在清空这个会话的记录，重新读一遍当前画面…", "busy")
-        return
-    clear_chat(title)
-    ov.set_status("记录已清空；采集没在跑，等窗口回来会自动重新收集", "warning")
-
-
 def spawn_worker():
-    """开一个采集子进程，它跟着 capture_on 走：置位=采集，清掉=暂停。
-    新子进程的去重状态是空的：已经在账上的会话先记一笔，等它第一帧（整屏重读）来时按画面重建，
-    不然画面上的消息会被当成新的再接一遍（见 drain 里 resync 那段）。"""
+    """开一个采集子进程，它跟着 capture_on 走：置位=采集，清掉=暂停。"""
     p = multiprocessing.Process(target=worker.run,
                                 args=(q, state["hwnd"], capture_on, debug_on, state.get("app"),
-                                      verify_q, cmd_q),
+                                      verify_q),
                                 daemon=True)
     p.start()
-    resync.update(chats)  # 启动那一次 chats 还是空的，等于什么都不做
     return p
 
 
@@ -199,7 +161,6 @@ def on_app_changed():
     state["hwnd"] = None
     state["retry_at"] = 0.0
     pending_fills.clear()  # 换目标的瞬间，没核对完的填入请求别再落到新子进程头上
-    pending_reset.clear()  # 同上：没回执的「重新收集」也跟着作废
     ov.set_fills_enabled(True)
     if was_on:
         on_toggle_capture(True)
@@ -313,26 +274,12 @@ def drain():
             else:
                 _fill_now(entry[0])
             continue
-        if kind == "reset_done":  # 采集侧已经丢掉去重状态了：这会儿清记录，接着收进来的就是干净的
-            _, title = msg
-            pending_reset.pop(title, None)
-            if title:
-                clear_chat(title)
-            else:  # 会话名没读出来时发的（全清）
-                for name in list(chats):
-                    clear_chat(name)
-            if capture_on.is_set():
-                ov.set_status("记录已清空，正在重新读当前画面…", "success")
-            else:  # 暂停中：重读要等采集恢复（子进程那会儿才看得到画面）
-                ov.set_status("记录已清空；继续采集后会重新读一遍当前画面", "success")
-            continue
         if kind == "dead":  # 采集彻底停了（聊天窗口关了之类），这才是真的要清状态
             state["area"] = None
             for c in chats.values():  # 在跑的分析作废，回来的结果不再往界面上贴
                 c["rev"] += 1
             state["rerun"].clear()
             pending_fills.clear()  # 没核对完的填入请求跟着作废，别在死掉的子进程上等到超时
-            pending_reset.clear()  # 子进程没了：等不到回执了，别再按旧会话清（窗口回来时子进程本来就会重读一遍）
             ov.set_fills_enabled(True)
             ov.invalidate_replies()
             ov.set_busy(False)
@@ -349,13 +296,6 @@ def drain():
             continue
         _, title, new, area = msg
         state["area"] = area
-        if title in resync:
-            # 子进程刚重开（聊天窗口关了又开、设置里换了聊天应用）：它的去重状态是空的，这一帧
-            # 是整屏重读，直接接在旧账后面会把画面上的消息再收一遍（看着就是「重复/错乱」）。
-            # 按画面重建：旧记录清掉，这一帧当这个会话的新开始。
-            resync.discard(title)
-            clear_chat(title)
-            ov.log(T("采集重启：这个会话的记录按聊天窗口现在显示的内容重新开始"), chat=title)
         chat = chat_of(title)
         chat["rev"] += 1  # 这个会话有新消息了，它在跑的分析作废
         if title == ov.current_chat():  # 看的是别的会话就别把人家的候选划掉
@@ -392,12 +332,6 @@ def tick():
             pending_fills.pop(vid, None)
             ov.set_fills_enabled(True)
             ov.set_status("核对会话超时（采集没响应），没敢填入；请再试一次。", "warning")
-        for title in [t for t, t0 in pending_reset.items() if now - t0 > 3.0]:
-            # 回执一直没来（子进程卡在某一帧里/队列丢了）：记录照清，重新收集等它缓过来自己来。
-            # 3 秒是按子进程最慢的一圈给的：等画面停稳最多 1 秒 + OCR 最多 0.8 秒 + 50ms 的圈间隔。
-            pending_reset.pop(title, None)
-            clear_chat(title)
-            ov.set_status("采集没响应，记录已清空；采集缓过来后会自动重新收集。", "warning")
         if capture_on.is_set() and child is None and time.time() >= state["retry_at"]:
             # 开关开着但子进程没了（聊天窗口关了/还没开）：定期找一次，回来就自动接上
             state["retry_at"] = time.time() + 3
@@ -450,7 +384,6 @@ if __name__ == "__main__":  # Windows 的 spawn 会让子进程重新执行本�
     ov = Overlay(on_fill=fill_reply, on_toggle_capture=on_toggle_capture,
                  on_target_change=on_target_change, on_toggle_debug=set_debug,
                  on_language_changed=on_language_changed, on_app_changed=on_app_changed,
-                 on_reset_chat=reset_chat,
                  result_of=lambda t: chats.get(t, {}).get("result"))
     try:
         state["hwnd"], found = find_chat_hwnd(want=want_app())
