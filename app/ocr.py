@@ -94,6 +94,9 @@ class Reader:
         self.ocr = _engine(app)
         self.lh = None  # 正常气泡字高，头一帧定
         self.seen = []  # [(who, name, text)]，累计，封顶 500
+        self.seen_y = {}  # {(who, text): 最近一次见到的 y}：同文第二条要靠「位置比折算位更低」翻案
+        self._shift = None  # 本帧内容的整体位移（对不上帧是 None）：位置折算用
+        self._bottom_key = None  # 本帧最底一条的 (who, text)：只有它允许按位置翻案
         self.last_lines = []  # 上一帧的 [(who, text, y)]，只用来判画面往哪边挪
         self.view_back = False  # 画面停在这条会话的旧内容上（用户往上翻了）：这段不报新消息
         self.anchor = None  # 最后报出去的那条 (who, text)：整段对不上时用它认「回到最新了没」
@@ -173,8 +176,9 @@ class Reader:
         这时必须无条件自愈：一直压着不报，她的新消息就漏了。而且它出现在画面里就说明至少
         有一行是"已知"的，靠已知行划出的下边界本来就挡得住旧消息，不用再压。"""
         shifts = sorted(cy - py for py, cy in self._align(lines, self.last_lines))
+        self._shift = shifts[len(shifts) // 2] if shifts else None  # 同文去重的位置折算要用
         if shifts:
-            shift = shifts[len(shifts) // 2]
+            shift = self._shift
             if shift > 3:
                 self.view_back = True
             elif shift < -3:
@@ -186,23 +190,45 @@ class Reader:
 
     def new_lines(self, lines):
         """去重（滚动不重复）→ 这一帧里真正新出现的 [(who, name, text)]。
-        本帧有已知行时只要已知行下方的：往上滚翻出来的旧消息在已知行上方，不算。
+        旧内容只要不比已知行更靠下就不报（往上翻出来的旧消息）；已知靠两本账：
+        文本账（seen，similar 匹配）+ 位置账（seen_y：那段文字最近一次的 y，按本帧位移折算）。
+        同文第二条不再是幽灵——她连发两条一模一样的「嗯」，最底那条位置比折算位低半个
+        气泡以上，按新消息报出来（上下文缺一句比多一句伤）；只有最底那条允许这样翻案，
+        中间/上面的同文行位置折算都对得上，不会跟着重报。
         本帧一行已知的都没有（大图把旧文字全顶出去了、切了聊天、滚远了）：全算，宁可多算不能漏。
+        对不上帧（切会话、拖滚动条跳很远，_shift 是 None）退回老规矩：文本见过就算旧。
 
         画面停在旧内容上（往上翻看历史）时不报：那段既不是新消息，报出去还会按到达顺序
         塞进记录和上下文，顺序跟聊天软件里对不上；但看到的照样记进 seen，翻回底部不重报。
-        ponytail: 同一人连发两句一模一样的会吞一句——对触发分析无害。"""
+        ponytail: 同一段文字滚出去再滚回来，位置账折算后对得上，不会误报成新消息。"""
         self._track_view(lines)
-        known_y = [y for w, n, t, y in lines if self._seen(w, n, t)]
+        self._bottom_key = (lines[-1][0], lines[-1][2]) if lines else None
+        known_y = [y for w, n, t, y in lines if not self._is_new(w, t, y)]
         floor = max(known_y) if known_y else -1
-        new = [(w, n, t) for w, n, t, y in lines if y > floor and not self._seen(w, n, t)]
+        new = [(w, n, t) for w, n, t, y in lines if y > floor and self._is_new(w, t, y)]
+        for w, n, t, y in lines:
+            self.seen_y[(w, t)] = y  # 位置账记最新的一条（同文取最靠下的）
         self.seen.extend((w, n, t) for w, n, t, _ in lines if not self._seen(w, n, t))
         del self.seen[:-500]
+        if len(self.seen_y) > 1000:  # 位置账跟着封顶；丢了的键回到「只看文本」的老路
+            for key in list(self.seen_y)[:500]:
+                del self.seen_y[key]
         if self.view_back:
             return []
         if new:  # 最新报出去的那条：下次认「回到最新了没」
             self.anchor = (new[-1][0], new[-1][2])
         return new
+
+    def _is_new(self, who, text, y):
+        """这条算不算没见过的新消息。位置翻案只开给画面最底那条（新消息永远从底下进来）：
+        它的位置比「上次位置 + 本帧位移」还低半个气泡以上，就是第二条同文。
+        其余行/对不上帧（_shift 为 None）退回老规矩：文本见过就算旧，宁可吞不可错报。"""
+        if (who, text) != self._bottom_key:
+            return not self._seen(who, None, text)
+        last = self.seen_y.get((who, text))
+        if last is None or self._shift is None:
+            return not self._seen(who, None, text)
+        return y - (last + self._shift) > 0.6 * (self.lh or 16)
 
     def _seen(self, who, name, text):
         # 名字不参与判重：名字行滚出画面后同一条消息会从 her(LO) 变成 her，不能算新消息
@@ -218,6 +244,7 @@ if __name__ == "__main__":
     def _fresh():
         r = Reader.__new__(Reader)  # 绕开 __init__：不建引擎
         r.app, r.seen, r.last_lines, r.view_back, r.anchor = DEFAULT, [], [], False, None
+        r.seen_y, r._shift, r._bottom_key, r.lh = {}, None, None, None
         return r
 
     r = _fresh()
@@ -253,6 +280,18 @@ if __name__ == "__main__":
     r2 = _fresh()
     r2.new_lines(_lines(("her", "在吗", 100), ("her", "在吗", 200)))
     assert r2.new_lines(_lines(("her", "在吗", 90))) == []
+    # 同文第二条不再是幽灵：她连发两条一模一样的「嗯」，最底那条要报（上下文缺一句比多一句伤）
+    r4 = _fresh()
+    r4.new_lines(_lines(("her", "嗯", 100)))
+    assert r4.new_lines(_lines(("her", "嗯", 60), ("her", "嗯", 160))) == [("her", None, "嗯")]
+    # 第三条照报；上面那两条位置账折算对得上，不会跟着重报
+    assert r4.new_lines(_lines(("her", "嗯", 40), ("her", "嗯", 140), ("her", "嗯", 240))) == [("her", None, "嗯")]
+    # 这两条滚出去再滚回来：位置账对得上，不翻案
+    assert r4.new_lines(_lines(("her", "嗯", 44), ("her", "嗯", 144))) == []
+    # 别人的（或她隔了别的消息再发的）同文也照报：bottom 才有翻案资格，其余行仍按文本账
+    r5 = _fresh()
+    r5.new_lines(_lines(("her", "好", 80), ("me", "好", 180)))
+    assert r5.new_lines(_lines(("her", "好", 50), ("me", "好", 150), ("her", "好", 250))) == [("her", None, "好")]
     # 轻微抖动（OCR 抖一两个像素、动图表情）：方向不该乱跳
     r3 = _fresh()
     r3.new_lines(_lines(("her", "在吗", 100), ("me", "在的", 200)))
