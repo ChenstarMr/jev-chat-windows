@@ -10,6 +10,7 @@ import ctypes
 import multiprocessing
 import queue
 import threading
+import time
 import traceback
 from collections import deque
 
@@ -26,7 +27,7 @@ from app.i18n import T
 # 只是缓冲区，实际喂模型几条由设置里的「参考上下文」决定
 # senders：这个群里发过言的人，去重、最近的排最前；target：用户挑的回复对象（None = 跟着最近那个走）
 chats = {}
-state = {"area": None, "busy": False, "rerun": {}, "hwnd": None, "chat": ""}
+state = {"area": None, "busy": False, "rerun": {}, "retry_at": 0.0, "hwnd": None, "chat": ""}
 results = queue.Queue()
 update_result = queue.Queue()  # 独立小队列，别跟 results 的 (kind, r, title, revision) 形状搅在一起
 
@@ -95,7 +96,7 @@ def on_language_changed():
 
 
 def on_toggle_capture(on):
-    """标题栏开关。启动时没找到微信就没有子进程，这会儿再找一次，找到了才真开得起来。"""
+    """标题栏开关。窗口还没开也照常接下开关：tick 里定期找一次，开了自动接上。"""
     global child
     if not on:
         capture_on.clear()
@@ -105,7 +106,9 @@ def on_toggle_capture(on):
             state["hwnd"], found = find_chat_hwnd()
             state["app"] = found.key
         except RuntimeError:
-            ov.set_capture(False, "未找到聊天窗口，打开后再开启采集")
+            state["retry_at"] = time.time() + 3  # 别每帧都枚举一遍窗口
+            ov.set_status("未找到聊天窗口，打开后自动开始采集", "warning")
+            capture_on.set()  # 开关保持开：窗口一开 tick 里自动接上
             return
         child = spawn_worker()
     capture_on.set()
@@ -199,19 +202,23 @@ def drain():
         if kind == "resumed":  # 子进程重新开始采集
             ov.set_capture(True)
             continue
-        if kind == "dead":  # 采集彻底停了（微信关了之类），这才是真的要清状态
+        if kind == "dead":  # 采集彻底停了（聊天窗口关了之类），这才是真的要清状态
             state["area"] = None
             for c in chats.values():  # 在跑的分析作废，回来的结果不再往界面上贴
                 c["rev"] += 1
             state["rerun"].clear()
             ov.invalidate_replies()
             ov.set_busy(False)
-            ov.set_capture(False, msg[1])
             ov.log(msg[1])
-            if child is not None:  # 子进程已经不干活了，收掉引用，下次打开开关重开一个
+            if child is not None:  # 子进程已经不干活了，收掉引用
                 child.terminate()
                 child.join()
                 child = None
+            if capture_on.is_set():  # 开关还开着：等窗口回来自动接上，不用人再拨一次
+                state["retry_at"] = time.time() + 3
+                ov.set_status("聊天窗口关了，等它重新打开后自动继续", "warning")
+            else:
+                ov.set_capture(False, msg[1])
             continue
         _, title, new, area = msg
         state["area"] = area
@@ -242,8 +249,19 @@ def drain():
 
 
 def tick():
+    global child
     try:
         drain()
+        if capture_on.is_set() and child is None and time.time() >= state["retry_at"]:
+            # 开关开着但子进程没了（聊天窗口关了/还没开）：定期找一次，回来就自动接上
+            state["retry_at"] = time.time() + 3
+            try:
+                state["hwnd"], found = find_chat_hwnd()
+            except RuntimeError:
+                found = None  # 还没开：三秒后再看
+            if found is not None:
+                state["app"] = found.key
+                child = spawn_worker()
         while not update_result.empty():
             latest, url = update_result.get()
             ov.set_update(latest, url)
@@ -290,7 +308,8 @@ if __name__ == "__main__":  # Windows 的 spawn 会让子进程重新执行本�
         state["hwnd"], found = find_chat_hwnd()
         state["app"] = found.key
     except RuntimeError:
-        ov.set_capture(False, "未找到聊天窗口，打开后再开启采集")
+        capture_on.set()  # 开关先开着：窗口一开 tick 里自动接上，不用人管
+        ov.set_status("未找到聊天窗口，打开后自动开始采集", "warning")
     else:
         capture_on.set()
         child = spawn_worker()
