@@ -89,6 +89,7 @@ def run(q, hwnd, enabled, debug_on, app_key=None, verify_q=None):
     warned = False  # 消息区识别失败是否已经报过，拖窗口时别每帧刷一条
     back = {}  # {会话名: 上次是不是停在旧内容上}，翻上去/翻回来各报一次，别每帧刷
     pending = None  # (待确认的会话名, 已读次数)：首见的新名字要下一帧再读到一致才认
+    err_sig, err_at = "", 0.0  # 上一条帧错误的指纹/时刻：同一个错别每帧刷，10 秒催一次
     while True:
         if verify_q is not None:
             _handle_verify(verify_q, cap, app, q)  # cap=None（暂停中）也答：父进程按老路直接填
@@ -152,7 +153,11 @@ def run(q, hwnd, enabled, debug_on, app_key=None, verify_q=None):
                 if debug_on.is_set():
                     q.put(("debug", _packet(full, area, title, reader, lines)))
         except Exception:
-            _err(q)  # 一帧出错不退出
+            # 一帧出错不退出；同一个错别以每秒 20 条的频率刷状态行，换错了/隔 10 秒才再报
+            sig = " ".join(traceback.format_exc().split())[-200:]
+            if sig != err_sig or time.time() - err_at > 10:
+                err_sig, err_at = sig, time.time()
+                q.put(("status", sig))
         time.sleep(0.05)
     q.put(("dead", "采集停了（聊天窗口关了？）"))
     try:

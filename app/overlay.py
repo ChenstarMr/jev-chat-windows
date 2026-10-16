@@ -1124,15 +1124,25 @@ class Overlay:
         self.feed.setPlainText("\n".join(self._log_text(entry) for entry in self._feed_entries))
         bar.setValue(bar.maximum() if follow else position)
 
-    def log(self, line):
-        """采集状态行：只进正在看的那个会话，不按会话存。"""
-        bar = self.feed.verticalScrollBar()
-        follow = self.feed.isHidden() or bar.value() >= bar.maximum() - 4
+    def _append_shown(self, line):
+        """往正在看的会话的显示区加一行；调用方负责先把账记进 feeds / _feed_entries。"""
         self._feed_entries.append(line)
         del self._feed_entries[:-_LOG_LINES]
+        bar = self.feed.verticalScrollBar()
+        follow = self.feed.isHidden() or bar.value() >= bar.maximum() - 4
         self.feed.appendPlainText(self._log_text(line))
         if follow:
             bar.setValue(bar.maximum())
+
+    def log(self, line, chat=None):
+        """采集状态行/诊断：带 chat 就记到那个会话的账上（切回来还在），正在看才显示——
+        别的会话翻上翻下、报错，不该出现在这一屏的记录里；不带 chat 就进正在看的会话。"""
+        chat = chat or self._shown
+        entries = self.feeds.setdefault(chat, [])
+        entries.append(line)
+        del entries[:-_LOG_LINES]
+        if chat == self._shown:
+            self._append_shown(line)
 
     def log_message(self, who, text, name="", timestamp=None, chat=None):
         """按会话存一份；只有正在看的那个会往显示区里写。"""
@@ -1147,7 +1157,7 @@ class Overlay:
         self._add_chat(chat)
         if chat != self._shown:
             return
-        self.log(lines[-1])
+        self._append_shown(lines[-1])  # 账已经在上面记进 feeds 了，别再记一遍
         if who == "her":
             self._show_latest(text)
         self._history_title()
@@ -1306,7 +1316,7 @@ class Overlay:
         self.empty.setVisible(not self.cands)
         self.insight.setVisible(bool(self.cands))
         self.referenceNote.setVisible(bool(self.cands) and not self._compact)
-        updated_at = datetime.now().strftime("%H:%M")
+        updated_at = result.get("at") or datetime.now().strftime("%H:%M")  # 缓存结果带生成时刻
         bind(self.updated, lambda: updated_at + " " + T("更新"))
         if self.cands:
             self.set_status("建议已更新，选一句适合你的回复", "success")

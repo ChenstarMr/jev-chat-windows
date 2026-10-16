@@ -242,11 +242,11 @@ def drain():
             continue
         if kind == "status":  # 单帧识别失败/报错，提示一下就好，别把正在跑的分析和已知坐标清掉
             ov.set_status(msg[1], "warning")
-            ov.log(msg[1])
+            ov.log(msg[1], chat=state["chat"])  # 记到采着的那个会话头上，别串到正在看的屏里
             continue
         if kind == "note":  # 采集侧的一句说明（往上翻看历史之类），只进聊天记录，不动状态行
             ov.log(T("聊天窗口翻到上面了：这一段只记录、不生成回复") if msg[1] == "back"
-                   else T("回到最新消息，继续生成回复"))
+                   else T("回到最新消息，继续生成回复"), chat=state["chat"])
             continue
         if kind == "paused":  # 子进程确认已暂停
             ov.set_capture(False)
@@ -283,7 +283,7 @@ def drain():
             ov.set_fills_enabled(True)
             ov.invalidate_replies()
             ov.set_busy(False)
-            ov.log(msg[1])
+            ov.log(msg[1], chat=state["chat"])
             if child is not None:  # 子进程已经不干活了，收掉引用
                 child.terminate()
                 child.join()
@@ -355,6 +355,7 @@ def tick():
             if revision != chat_of(title)["rev"]:  # 这个会话后来又说话了，这份结果过期了
                 ov.set_busy(False)
             elif kind == "ok":
+                r["at"] = time.strftime("%H:%M")  # 生成时刻：切回旧会话看缓存时别盖成当前时间
                 chat_of(title)["result"] = r  # 先存着；正看着这个会话才立刻贴上去
                 if title == ov.current_chat():
                     ov.show(r)
@@ -363,7 +364,7 @@ def tick():
             else:
                 ov.set_busy(False)
                 ov.set_status("生成失败，请检查网络和服务设置；新消息到来后会重试。", "error")
-                ov.log(r)
+                ov.log(r, chat=title)  # 哪个会话失败的记到哪个会话头上
         if state["rerun"] and not state["busy"]:
             # 别的会话还压着重跑没跑：现在闲下来了，按会话接着跑
             t = next(iter(state["rerun"]))
