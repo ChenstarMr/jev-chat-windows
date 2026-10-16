@@ -34,6 +34,8 @@ verify_q = multiprocessing.Queue()  # 填入前的现场核对请求：父进程
 cmd_q = multiprocessing.Queue()  # 控制命令（清空记录、重新收集）：父进程发，子进程丢掉去重状态后回执
 pending_fills = {}  # {核对 id: (要填的文本, 发起时刻)}：核对通过才真填；对不上/超时就作废
 pending_reset = {}  # {会话名: 发起时刻}：等子进程确认丢掉去重状态再清记录，免得清完又被旧帧填回来
+resync = set()  # {会话名}：子进程重开后这些会话的记录要按画面重建——新子进程去重状态是空的，
+                # 第一帧整屏重读，不重建就会把画面上已有的消息再收一遍
 _fill_seq = itertools.count(1)
 update_result = queue.Queue()  # 独立小队列，别跟 results 的 (kind, r, title, revision) 形状搅在一起
 
@@ -118,12 +120,15 @@ def reset_chat(title):
 
 
 def spawn_worker():
-    """开一个采集子进程，它跟着 capture_on 走：置位=采集，清掉=暂停。"""
+    """开一个采集子进程，它跟着 capture_on 走：置位=采集，清掉=暂停。
+    新子进程的去重状态是空的：已经在账上的会话先记一笔，等它第一帧（整屏重读）来时按画面重建，
+    不然画面上的消息会被当成新的再接一遍（见 drain 里 resync 那段）。"""
     p = multiprocessing.Process(target=worker.run,
                                 args=(q, state["hwnd"], capture_on, debug_on, state.get("app"),
                                       verify_q, cmd_q),
                                 daemon=True)
     p.start()
+    resync.update(chats)  # 启动那一次 chats 还是空的，等于什么都不做
     return p
 
 
@@ -344,6 +349,13 @@ def drain():
             continue
         _, title, new, area = msg
         state["area"] = area
+        if title in resync:
+            # 子进程刚重开（聊天窗口关了又开、设置里换了聊天应用）：它的去重状态是空的，这一帧
+            # 是整屏重读，直接接在旧账后面会把画面上的消息再收一遍（看着就是「重复/错乱」）。
+            # 按画面重建：旧记录清掉，这一帧当这个会话的新开始。
+            resync.discard(title)
+            clear_chat(title)
+            ov.log(T("采集重启：这个会话的记录按聊天窗口现在显示的内容重新开始"), chat=title)
         chat = chat_of(title)
         chat["rev"] += 1  # 这个会话有新消息了，它在跑的分析作废
         if title == ov.current_chat():  # 看的是别的会话就别把人家的候选划掉
