@@ -189,6 +189,10 @@ def drain():
             ov.set_status(msg[1], "warning")
             ov.log(msg[1])
             continue
+        if kind == "note":  # 采集侧的一句说明（往上翻看历史之类），只进聊天记录，不动状态行
+            ov.log(T("聊天窗口翻到上面了：这一段只记录、不生成回复") if msg[1] == "back"
+                   else T("回到最新消息，继续生成回复"))
+            continue
         if kind == "paused":  # 子进程确认已暂停
             ov.set_capture(False)
             continue

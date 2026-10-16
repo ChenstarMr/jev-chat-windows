@@ -5,7 +5,6 @@ import re
 import time
 
 import numpy as np
-from rapidocr_onnxruntime import RapidOCR
 
 from app.chatapps import DEFAULT, ChatApp
 
@@ -18,7 +17,9 @@ def _engine(app: ChatApp = DEFAULT):
     det_limit_type 默认 'min' 会把小图放大到短边 736，裁小反而更慢；必须 'max'。
 
     RapidOCR 的内置模型只有中英文，韩日文全是乱码，所以这类界面走 Windows 自带 OCR
-    （离线、随系统语言包装好，见 app/ocr_windows.py）；没有对应识别器就退回 RapidOCR。"""
+    （离线、随系统语言包装好，见 app/ocr_windows.py）；没有对应识别器就退回 RapidOCR。
+    引擎在函数里 import：打包时 jev.spec 用 collect_all 把整个包收进去，不靠静态分析，
+    而这样跑「不加载引擎」的自测就不用先装它（跟 core/llm.py 里 SDK 的处理一个道理）。"""
     want = app.ocr if app.ocr not in _FELL_BACK else "rapidocr"
     if want not in _ENGINES:
         if want == "windows":
@@ -29,6 +30,8 @@ def _engine(app: ChatApp = DEFAULT):
                 _FELL_BACK.add("windows")
                 return _engine(app)
         else:
+            from rapidocr_onnxruntime import RapidOCR
+
             _ENGINES[want] = RapidOCR(intra_op_num_threads=4, det_limit_type="max",
                                       det_limit_side_len=4000)
     return _ENGINES[want]
@@ -91,6 +94,9 @@ class Reader:
         self.ocr = _engine(app)
         self.lh = None  # 正常气泡字高，头一帧定
         self.seen = []  # [(who, name, text)]，累计，封顶 500
+        self.last_lines = []  # 上一帧的 [(who, text, y)]，只用来判画面往哪边挪
+        self.view_back = False  # 画面停在这条会话的旧内容上（用户往上翻了）：这段不报新消息
+        self.anchor = None  # 最后报出去的那条 (who, text)：整段对不上时用它认「回到最新了没」
         self.last_boxes = []  # 调试视图用：[(x0,y0,x1,y1,kind,text)]，消息区裁剪坐标
         self.last_ms = 0  # 上一帧 OCR 耗时
 
@@ -109,7 +115,8 @@ class Reader:
         # 引用块/时间戳/公告带冒号，链接卡片灰字印在气泡底色上，都不会被当成名字。
         # ponytail: 名字行被 OCR 漏掉时会挂到上一个人头上。
         name, raw = None, []
-        for box, text, _ in sorted(res or [], key=lambda r: r[0][0][1]):
+        # 按框顶排序：四个点不保证从左上角开始（斜着认出来的字会换个起点），取 min y 最稳
+        for box, text, _ in sorted(res or [], key=lambda r: min(p[1] for p in r[0])):
             kind, bg, h = who_said(chat, box, self.app)
             xs, ys = [p[0] for p in box], [p[1] for p in box]
             rect = (int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys)))
@@ -128,7 +135,7 @@ class Reader:
                 self.last_boxes.append(rect + ("image" if kind is None else "tiny", text))
                 continue
             self.last_boxes.append(rect + (kind, text))
-            raw.append((kind, name if kind == "her" else None, text, box[0][1], box[2][1], h))
+            raw.append((kind, name if kind == "her" else None, text, min(ys), max(ys), h))
         if not self.lh and len(raw) >= 3:
             self.lh = float(np.median([r[5] for r in raw]))
         # 同一气泡的多行合并：同人、上一行底到这一行顶的间距不到半个字高（不同气泡之间至少隔一个字高）
@@ -141,18 +148,107 @@ class Reader:
                 lines.append([who, nm, text, top, bottom])
         return [(w, n, t, y) for w, n, t, y, _ in lines]
 
+    def _align(self, lines, prev):
+        """本帧的行按顺序跟上一帧对上 → [(prev_y, cur_y)]。没配上的行不前进指针：
+        只在真配上时才挪，免得前面一条认错就把后面全带偏；重复文本按出现顺序一一对上。"""
+        out, j = [], 0
+        for w, n, t, y in lines:
+            k = j
+            while k < len(prev):
+                pw, pt, py = prev[k]
+                if pw == w and similar(pt, t):
+                    out.append((py, y))
+                    j = k + 1
+                    break
+                k += 1
+        return out
+
+    def _track_view(self, lines):
+        """画面往哪边挪：整段内容上移 = 在往新的方向走（新消息把旧的顶上去）；
+        下移 = 用户往上翻，画面停在旧内容上。中位数抹掉个别行的抖动，±3px 以内当没动
+        （动图表情每帧都在变，但同一行不会跳位置）。整段对不上（切会话、拖滚动条跳了很远）
+        就沿用上次的判断——只有一种情况要纠正：最新那条又出现在画面里，说明已经回到最新了。"""
+        shifts = sorted(cy - py for py, cy in self._align(lines, self.last_lines))
+        if shifts:
+            shift = shifts[len(shifts) // 2]
+            if shift > 3:
+                self.view_back = True
+            elif shift < -3:
+                self.view_back = False
+        elif self.anchor and any(w == self.anchor[0] and similar(t, self.anchor[1])
+                                 for w, n, t, y in lines):
+            self.view_back = False
+        self.last_lines = [(w, t, y) for w, n, t, y in lines]
+
     def new_lines(self, lines):
         """去重（滚动不重复）→ 这一帧里真正新出现的 [(who, name, text)]。
         本帧有已知行时只要已知行下方的：往上滚翻出来的旧消息在已知行上方，不算。
         本帧一行已知的都没有（大图把旧文字全顶出去了、切了聊天、滚远了）：全算，宁可多算不能漏。
+
+        画面停在旧内容上（往上翻看历史）时不报：那段既不是新消息，报出去还会按到达顺序
+        塞进记录和上下文，顺序跟聊天软件里对不上；但看到的照样记进 seen，翻回底部不重报。
         ponytail: 同一人连发两句一模一样的会吞一句——对触发分析无害。"""
+        self._track_view(lines)
         known_y = [y for w, n, t, y in lines if self._seen(w, n, t)]
         floor = max(known_y) if known_y else -1
         new = [(w, n, t) for w, n, t, y in lines if y > floor and not self._seen(w, n, t)]
         self.seen.extend((w, n, t) for w, n, t, _ in lines if not self._seen(w, n, t))
         del self.seen[:-500]
+        if self.view_back:
+            return []
+        if new:  # 最新报出去的那条：下次认「回到最新了没」
+            self.anchor = (new[-1][0], new[-1][2])
         return new
 
     def _seen(self, who, name, text):
         # 名字不参与判重：名字行滚出画面后同一条消息会从 her(LO) 变成 her，不能算新消息
         return any(w == who and similar(t, text) for w, _, t in self.seen)
+
+
+if __name__ == "__main__":
+    # ponytail: 只测「哪一帧算新消息」这段（不加载 OCR 引擎、不截图）。
+    # 顺序错乱和「翻上去看历史被当成新消息」都出在这一段，其余部分是像素活。
+    def _lines(*specs):
+        return [(w, None, t, y) for w, t, y in specs]
+
+    def _fresh():
+        r = Reader.__new__(Reader)  # 绕开 __init__：不建引擎
+        r.app, r.seen, r.last_lines, r.view_back, r.anchor = DEFAULT, [], [], False, None
+        return r
+
+    r = _fresh()
+    # 头一帧：屏幕上看到的全算（不报就等于永远不分析）
+    assert r.new_lines(_lines(("her", "在吗", 100), ("me", "在的", 200))) == \
+        [("her", None, "在吗"), ("me", None, "在的")]
+    # 来新消息：内容整体上移 → 只报下面那条新的
+    assert r.new_lines(_lines(("me", "在的", 80), ("her", "晚上吃啥", 180))) == \
+        [("her", None, "晚上吃啥")]
+    assert r.view_back is False
+    # 往上翻看历史：内容整体下移 → 一条都不报（报了就会按到达顺序塞进记录，顺序全乱）
+    assert r.new_lines(_lines(("her", "早", 200), ("me", "在的", 300),
+                              ("her", "晚上吃啥", 400))) == []
+    assert r.view_back is True
+    # 停在旧内容上时继续翻：还是不报，但看到的都记进 seen 了
+    assert r.new_lines(_lines(("her", "昨天那事", 150), ("her", "早", 250))) == []
+    # 翻回底部：整段上移 → 恢复上报，翻过的那几条不重报
+    assert r.new_lines(_lines(("me", "在的", 80), ("her", "晚上吃啥", 180))) == []
+    assert r.view_back is False
+    # 回到最新之后来新消息：照报
+    assert r.new_lines(_lines(("me", "在的", 60), ("her", "晚上吃啥", 160),
+                              ("her", "七点行吗", 260))) == [("her", None, "七点行吗")]
+    # 对不上（切会话、滚远了）：沿用上次的方向，不在旧内容上就照报，宁可多算不能漏
+    assert r.new_lines(_lines(("her", "八点见", 100), ("me", "好", 200))) == \
+        [("her", None, "八点见"), ("me", None, "好")]
+    r.view_back = True  # 翻着的时候画面整个换了一批（大图顶出去）：别把旧内容当新的
+    assert r.new_lines(_lines(("her", "前天", 120), ("me", "嗯", 220))) == []
+    assert r.view_back is True
+    # 同一人连发两句一样的：第二句被吞（跟原来一样，对触发分析无害）
+    r2 = _fresh()
+    r2.new_lines(_lines(("her", "在吗", 100), ("her", "在吗", 200)))
+    assert r2.new_lines(_lines(("her", "在吗", 90))) == []
+    # 轻微抖动（OCR 抖一两个像素、动图表情）：方向不该乱跳
+    r3 = _fresh()
+    r3.new_lines(_lines(("her", "在吗", 100), ("me", "在的", 200)))
+    r3.new_lines(_lines(("her", "在吗", 102), ("me", "在的", 198)))
+    assert r3.view_back is False
+    print("ocr.new_lines ok")

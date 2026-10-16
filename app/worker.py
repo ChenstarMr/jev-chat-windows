@@ -42,6 +42,7 @@ def run(q, hwnd, enabled, debug_on, app_key=None):
     title, head = "", None  # 当前会话名 / 上一帧的头部像素
     last_area = None  # 上次发给父进程的 4 元组，变了才再发一次
     warned = False  # 消息区识别失败是否已经报过，拖窗口时别每帧刷一条
+    back = {}  # {会话名: 上次是不是停在旧内容上}，翻上去/翻回来各报一次，别每帧刷
     while True:
         if not enabled.is_set():
             if cap is not None:
@@ -94,6 +95,11 @@ def run(q, hwnd, enabled, debug_on, app_key=None):
                     new = reader.new_lines(lines)
                     if new:
                         q.put(("lines", title, new, rect))
+                    if back.setdefault(title, False) != reader.view_back:
+                        # 翻上去看历史时只记录、不生成回复；翻回底部再恢复。给个说明，
+                        # 免得用户以为程序不动了（这条只进聊天记录，不动状态行）
+                        back[title] = reader.view_back
+                        q.put(("note", "back" if reader.view_back else "front"))
                 if debug_on.is_set():
                     q.put(("debug", _packet(full, area, title, reader, lines)))
         except Exception:
