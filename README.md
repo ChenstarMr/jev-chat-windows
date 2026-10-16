@@ -1,13 +1,5 @@
 # JevChat-Windows
 
-本仓库只维护当前这一套识别。有能力的人可以 Fork 后自行适配别的聊天窗口，作者不提供这项适配，也不对 Fork 出去的改动负责。
-
-## 公众号
-
-反馈和合作走公众号「恸码奇点」。扫左边的码，或者搜一搜这个名字。
-
-<p align="center"><img src="docs/wechat-mp.png" width="640" alt="公众号：恸码奇点"></p>
-
 聊天窗口旁挂的回复辅助：本地 OCR 读屏上的对话 → Jev 判断意图/情绪 → 给出 3 条候选回复 →
 一键填入输入框。**发送永远手动，程序不替你按发送。**
 
@@ -18,7 +10,7 @@
 
 **普通使用直接下载，不用装 Python、不用碰源码。** 后面的「源码运行」是给开发者的。
 
-👉 **[下载最新版](https://github.com/jev-chat/jev-chat-windows/releases/latest)**
+👉 **[下载最新版](https://github.com/ChenstarMr/jev-chat-windows/releases/latest)**
 
 1. 在 Releases 页下载 `jev-chat-windows-vX.Y.Z.zip`（约 146 MB）
 2. 解压到一个固定目录（整个文件夹一起，exe 要用旁边那堆文件）
@@ -270,7 +262,7 @@ MiniMax、Qwen 走 `/messages`，Grok、GPT 走 `/responses`，选了会失败�
 普通使用请直接用上面的[下载即用](#下载即用推荐)。想改代码、调 prompt、自己打包才需要这一节。
 
 ```bash
-git clone https://github.com/jev-chat/jev-chat-windows.git
+git clone https://github.com/ChenstarMr/jev-chat-windows.git
 cd jev-chat-windows
 python -m venv .venv
 .venv\Scripts\activate
@@ -386,7 +378,6 @@ NOTICE                  出处、第三方组件许可证与商用约束
 docs/KICKOFF.md         最初的需求和硬约束说明
 docs/icon.ico           程序图标，tools/make_icon.py 生成
 docs/ui_*.png           README 里那三张截图，tools/preview_ui.py --screenshot 出的
-docs/wechat-mp.png      公众号「恸码奇点」长条横幅，README 标题下和设置页顶部共用
 config.json             你自己的设置，不进仓库（在 .gitignore 里）
 ```
 
@@ -427,7 +418,6 @@ config.json             你自己的设置，不进仓库（在 .gitignore 里�
 - 界面语言新增简体中文 / 한국어 选择，切换后立即刷新主界面和调试窗口，无需重启；保留未保存输入、
   聊天记录和回复候选
 - 修复打包版语言配置读取路径，以及保存设置、切换或关闭调试视图时丢失语言选择的问题
-- 微信公众号横幅移到设置页顶部
 - 初步支持 KakaoTalk 韩文聊天：新增 Windows 本地 OCR 后端、黄色己方气泡识别、发言人识别和群聊
   置顶公告过滤；需安装韩文 OCR 语言包，使用条件与限制见 [韩文支持说明](docs/KOREAN.md)
 
@@ -441,7 +431,7 @@ config.json             你自己的设置，不进仓库（在 .gitignore 里�
   429 等错误保留服务端返回的原因
 - 修：Win10 1909 上采集不再切换不受支持的光标/边框选项；候选被过滤光时明确报错；长会话名和回复对象名
   在窄窗口按宽度省略，选项里仍保留完整名称
-- 源码安装说明明确 Python 3.10–3.12；README 和设置页加入公众号「恸码奇点」入口
+- 源码安装说明明确 Python 3.10–3.12
 
 **v0.1.9**
 - 设置页「模型」卡片：判断 · Jev（OpenRouter / TypeSafe 直连）+ 起草 · 语言模型（12 家预设 + 自定义
@@ -515,13 +505,11 @@ config.json             你自己的设置，不进仓库（在 .gitignore 里�
 
 ## 版权与许可
 
-Copyright © 2026 rezoch340 与 jev-chat 贡献者。代码以 [MIT](LICENSE) 协议开源，另见 [NOTICE](NOTICE)。
+本项目自己的代码以 [MIT](LICENSE) 协议开源，另见 [NOTICE](NOTICE)。
 
-- 本项目是 [Jev 聊天助手](https://github.com/jev-chat/jev-chat-jarvis)（安卓原版）的 Windows
-  姊妹项目，Jev 判断内核与题目口径来自上游，版权归 Finderchangchang 与 jev-chat 贡献者所有。
-- **分发或商用时须保留 LICENSE 与 NOTICE**，并在产品「关于」页、说明文档或发布页写明来源。推荐写法：
-  `基于 JevChat-Windows（https://github.com/jev-chat/jev-chat-windows）二次开发`。
-- 不要用「JevChat-Windows」「Jev 聊天助手」「jev-chat」名称或 chatjevs.com 域名暗示由原作者出品或背书。
+- Jev 判断内核与题目口径来自 [Jev 聊天助手](https://github.com/jev-chat/jev-chat-jarvis)（安卓原版），
+  版权归 Finderchangchang 与 jev-chat 贡献者所有。
+- **分发或商用时须保留 LICENSE 与 NOTICE**，并注明来源。
 
 **第三方组件与商用**：本项目自己的代码是 MIT，但 Windows 发布包（PyInstaller 打的 zip）里打进了
 [PySide6-Fluent-Widgets](https://qfluentwidgets.com/)，该组件是 GPLv3 协议，非商用免费，商用需要
