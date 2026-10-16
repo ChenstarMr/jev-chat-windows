@@ -5,6 +5,7 @@
 import ctypes
 import time
 import traceback
+from queue import Empty
 
 import numpy as np
 
@@ -40,6 +41,27 @@ def _confirm_title(title, name, readers, pending):
     return title, (name, tries), False
 
 
+def _handle_verify(verify_q, cap, app, q):
+    """「填入」前的现场核对：父进程问「现在开的是哪个会话」，拿最新一帧重新认一遍
+    会话名和消息区，从 q 回 ("verified", id, 想填的会话名, 现读的会话名, 现在的消息区)。
+    title=None = 暂停中/没法核对（父进程按老样子直接填）；title="" = 在采但读不出（父进程不敢填）。
+    核对不等停稳：宁可毛糙也要「现在」，等停稳恰恰会放过刚切走的那零点几秒。"""
+    while True:
+        try:
+            vid, want = verify_q.get_nowait()
+        except Empty:
+            return
+        title, area4 = (None, None) if cap is None else ("", None)
+        full = cap.latest() if cap is not None else None
+        if full is not None:
+            area = chat_area(full)
+            if area is not None:
+                x0, y0t, x1, y1, bg, y_pane = area
+                title = read_title(full[y_pane:y0t, x0:x1], app)
+                area4 = (int(x0), int(y0t), int(x1), int(y1))
+        q.put(("verified", vid, want, title, area4))
+
+
 def _packet(full, area, title, reader, lines):
     """调试视图的一帧：整帧缩到长边 ≤1100 再走队列（原帧 2560 宽裸传要 20MB），只在内存里传，不落盘。
     整数步长切片够用，不引新依赖；框和坐标照发原始值，画的那边按 scale 折算。"""
@@ -53,10 +75,11 @@ def _packet(full, area, title, reader, lines):
             "ocr_ms": reader.last_ms if reader else 0, "ts": time.time()}
 
 
-def run(q, hwnd, enabled, debug_on, app_key=None):
+def run(q, hwnd, enabled, debug_on, app_key=None, verify_q=None):
     """enabled 置位=采集，清掉=暂停。暂停时停掉 WGC 会话（Windows 那圈黄色采集边框也跟着没了），
     恢复时重开一个；readers 一直留着，去重状态不丢，恢复后不会把屏幕上的旧消息再报一遍。
-    debug_on 置位才往队列里送整帧（一帧 2~3MB），关着一点额外活都不干。"""
+    debug_on 置位才往队列里送整帧（一帧 2~3MB），关着一点额外活都不干。
+    verify_q 是「填入前的现场核对」请求队列：每圈开头先答掉，别让父进程干等。"""
     ctypes.windll.user32.SetProcessDPIAware()
     app = chatapps.get(app_key)
     cap = None
@@ -67,6 +90,8 @@ def run(q, hwnd, enabled, debug_on, app_key=None):
     back = {}  # {会话名: 上次是不是停在旧内容上}，翻上去/翻回来各报一次，别每帧刷
     pending = None  # (待确认的会话名, 已读次数)：首见的新名字要下一帧再读到一致才认
     while True:
+        if verify_q is not None:
+            _handle_verify(verify_q, cap, app, q)  # cap=None（暂停中）也答：父进程按老路直接填
         if not enabled.is_set():
             if cap is not None:
                 cap.stop()
@@ -152,4 +177,23 @@ if __name__ == "__main__":
     assert _confirm_title("甲", "陌生会话", {"乙": None}, None) == ("甲", ("陌生会话", 1), False)
     # 一直读不稳（动头像/加载动画）：到上限采用最新的，别永远重读
     assert _confirm_title("甲", "丁", {}, ("丙", 5)) == ("丁", None, True)
+    # 填入前的现场核对：暂停中回 None（父进程按老路直接填）、在采但没帧回空串（父进程不敢填）
+    import queue as _queue
+
+    class _Cap:
+        def __init__(self, frame):
+            self._f = frame
+
+        def latest(self):
+            return self._f
+
+    vq, oq = _queue.Queue(), _queue.Queue()
+    _handle_verify(vq, None, chatapps.DEFAULT, oq)
+    assert oq.empty()  # 没请求就别吭声
+    vq.put((7, "某会话"))
+    _handle_verify(vq, None, chatapps.DEFAULT, oq)
+    assert oq.get_nowait() == ("verified", 7, "某会话", None, None)
+    vq.put((8, "某会话"))
+    _handle_verify(vq, _Cap(None), chatapps.DEFAULT, oq)
+    assert oq.get_nowait() == ("verified", 8, "某会话", "", None)
     print("worker._confirm_title ok")

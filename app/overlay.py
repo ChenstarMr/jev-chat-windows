@@ -216,6 +216,7 @@ class Overlay:
         self.cards = []
         self._busy = False
         self._current = False
+        self._verifying = False  # 填入前的会话核对进行中：这零点几秒别让按钮点出第二发
         self._compact = None  # 断点模式：None 保证 _relayout 第一次调用必定生效
         self._pageLayouts = []
         self._hintLabels = []
@@ -1001,8 +1002,7 @@ class Overlay:
             self.set_status("未能填入，请确认聊天窗口可用后重试，或复制回复。", "error")
             self.log(f"[填入失败] {type(e).__name__}: {e}")
             self.log(f"[填入失败堆栈] {' '.join(traceback.format_exc().split())[:300]}")
-            return
-        self.set_status("已尝试填入，请确认内容后发送。", "success")
+        # 「已尝试填入」不在这儿说：核对是异步的，等 main 那边真填完才报成功/失败
 
     def _copy(self, index):
         if self._busy or not self._current or index >= len(self.cands):
@@ -1063,7 +1063,13 @@ class Overlay:
             if not self.cands:
                 self._empty_text()
         for card in self.cards:
-            card.set_available(self._current and not busy)
+            card.set_available(self._current and not busy and not self._verifying)
+
+    def set_fills_enabled(self, on):
+        """填入前的会话核对期间禁用填入/复制按钮，核对完恢复；不动 _current（候选没过期）。"""
+        self._verifying = not on
+        for card in self.cards:
+            card.set_available(on and self._current and not self._busy)
 
     def _empty_text(self):
         """空态卡片的默认文案，配好没配好两套说法。"""
@@ -1273,6 +1279,9 @@ class Overlay:
             card = _ReplyCard(self, index, recommended=index == best, number=position, score=scores[index])
             self.replyBox.addWidget(card)
             self.cards.append(card)
+        if self._verifying:  # 上一发的核对还没回来：新贴上来的候选先别让点，等这轮结束
+            for card in self.cards:
+                card.set_available(False)
         reply_to = result.get("reply_to")
         bind(self.insightTitle, lambda: T("对话参考 · 回复给 {name}").format(name=reply_to)
              if reply_to else T("对话参考"))

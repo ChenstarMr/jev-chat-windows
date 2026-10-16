@@ -7,6 +7,7 @@
 两个模型（判断 Jev / 起草语言模型）的来源和 key 在独立设置页填写，不用改代码。IDE 里直接 Run。
 """
 import ctypes
+import itertools
 import multiprocessing
 import queue
 import threading
@@ -29,6 +30,9 @@ from app.i18n import T
 chats = {}
 state = {"area": None, "busy": False, "rerun": {}, "retry_at": 0.0, "hwnd": None, "chat": ""}
 results = queue.Queue()
+verify_q = multiprocessing.Queue()  # 填入前的现场核对请求：父进程问「现在开的是谁」，子进程拿最新帧答
+pending_fills = {}  # {核对 id: (要填的文本, 发起时刻)}：核对通过才真填；对不上/超时就作废
+_fill_seq = itertools.count(1)
 update_result = queue.Queue()  # 独立小队列，别跟 results 的 (kind, r, title, revision) 形状搅在一起
 
 
@@ -45,7 +49,24 @@ def target_of(title):
     return chat["senders"][0] if chat["senders"] else None
 
 
+def _fill_now(text):
+    """真正去点输入框粘贴：核对通过的、和没法核对（暂停中）的都从这儿走。
+    成功/失败的状态也从这儿出——核对是异步的，「已填入」不能在发起时就说。"""
+    try:
+        fill(state["hwnd"], state["area"], text)
+    except Exception as e:
+        import traceback
+        ov.set_status("未能填入，请确认聊天窗口可用后重试，或复制回复。", "error")
+        ov.log(f"[填入失败] {type(e).__name__}: {e}")
+        ov.log(f"[填入失败堆栈] {' '.join(traceback.format_exc().split())[:300]}")
+        return
+    ov.set_status("已尝试填入，请确认内容后发送。", "success")
+
+
 def fill_reply(text):
+    """点「填入」。先让子进程拿最新一帧现场核对微信当前开着的会话，对上了才真的点输入框——
+    微信刚切走、界面还没跟上的那零点几秒里照旧粘贴，是「填进别的窗口」的主要来源。
+    核对只要一次标题 OCR（约百毫秒），期间按钮禁掉防连点；采集没在跑时核对不了，按老样子直接填。"""
     if state["hwnd"] is None:  # 子进程重开过，hwnd 可能换了，用最新的
         raise RuntimeError(T("未找到聊天窗口，请确认已经打开"))
     if state["area"] is None:
@@ -54,13 +75,20 @@ def fill_reply(text):
         target = target_of(ov.current_chat())  # 填进去的是界面上正看着的那个会话的对象
         if target:
             text = f"@{target} " + text  # 纯文本，微信不认成真正的 @，只是让群里看得出在跟谁说
-    fill(state["hwnd"], state["area"], text)
+    if capture_on.is_set() and child is not None:
+        vid = next(_fill_seq)
+        pending_fills[vid] = (text, time.time())
+        verify_q.put((vid, ov.current_chat()))
+        ov.set_fills_enabled(False)  # 核对这零点几秒里先禁用填入/复制，防连点重复填
+        return
+    _fill_now(text)
 
 
 def spawn_worker():
     """开一个采集子进程，它跟着 capture_on 走：置位=采集，清掉=暂停。"""
     p = multiprocessing.Process(target=worker.run,
-                                args=(q, state["hwnd"], capture_on, debug_on, state.get("app")),
+                                args=(q, state["hwnd"], capture_on, debug_on, state.get("app"),
+                                      verify_q),
                                 daemon=True)
     p.start()
     return p
@@ -132,6 +160,8 @@ def on_app_changed():
     state["area"] = None
     state["hwnd"] = None
     state["retry_at"] = 0.0
+    pending_fills.clear()  # 换目标的瞬间，没核对完的填入请求别再落到新子进程头上
+    ov.set_fills_enabled(True)
     if was_on:
         on_toggle_capture(True)
 
@@ -224,11 +254,33 @@ def drain():
         if kind == "resumed":  # 子进程重新开始采集
             ov.set_capture(True)
             continue
+        if kind == "verified":  # 填入前的现场核对回来了：会话对上才真的填
+            _, vid, want, title, area = msg
+            entry = pending_fills.pop(vid, None)
+            ov.set_fills_enabled(True)
+            if entry is None:
+                continue  # 早作废了（超时/采集死了），别填两遍
+            if title is None:  # 采集没在跑（暂停/没窗口）：核对不了，按老样子直接填
+                _fill_now(entry[0])
+                continue
+            if area:
+                state["area"] = area  # 核对顺手把此刻的消息区坐标也带来了，填的时候用它
+            if not title or area is None:
+                ov.set_status("没敢填入：核对时读不到当前会话，请再点一次填入。", "warning")
+            elif title != want:
+                ov.set_status(lambda w=want, t=title:
+                              T("没敢填入：微信现在开的是「{t}」，候选是给「{w}」写的").format(t=t, w=w),
+                              "warning")
+            else:
+                _fill_now(entry[0])
+            continue
         if kind == "dead":  # 采集彻底停了（聊天窗口关了之类），这才是真的要清状态
             state["area"] = None
             for c in chats.values():  # 在跑的分析作废，回来的结果不再往界面上贴
                 c["rev"] += 1
             state["rerun"].clear()
+            pending_fills.clear()  # 没核对完的填入请求跟着作废，别在死掉的子进程上等到超时
+            ov.set_fills_enabled(True)
             ov.invalidate_replies()
             ov.set_busy(False)
             ov.log(msg[1])
@@ -274,6 +326,12 @@ def tick():
     global child
     try:
         drain()
+        now = time.time()
+        for vid in [v for v, (_, t0) in pending_fills.items() if now - t0 > 2.0]:
+            # 子进程一直没答（卡死了/队列丢了）：作废，别让按钮永远禁着
+            pending_fills.pop(vid, None)
+            ov.set_fills_enabled(True)
+            ov.set_status("核对会话超时（采集没响应），没敢填入；请再试一次。", "warning")
         if capture_on.is_set() and child is None and time.time() >= state["retry_at"]:
             # 开关开着但子进程没了（聊天窗口关了/还没开）：定期找一次，回来就自动接上
             state["retry_at"] = time.time() + 3
