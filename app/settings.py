@@ -217,5 +217,7 @@ def save(relationship_text: str | None = None, context_n: int | None = None, *,
     lang = _read("lang") if lang_text is None else lang_text.strip().lower()
     if lang is not None:
         data["lang"] = lang
-    with open(_CONFIG, "w", encoding="utf-8") as f:
+    tmp = _CONFIG + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp, _CONFIG)  # 原子替换：写一半崩了/断电，旧配置原封不动还在
