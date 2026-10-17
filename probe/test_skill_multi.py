@@ -97,4 +97,36 @@ with patch("app.overlay.settings", fake):
     assert names.count("legacy-one") == 1, names
     assert names == ["create-partner", "new-one", "create-ex", "legacy-one"], names
     assert ov.skillBars.count() == 4
-    print("overlay multi-skill ok:", names)
+
+    # 备注：_set_note 只改那一条 + 原地刷新标题，不重铺列表
+    orig_reload, reload_calls = ov._reload_skills, []
+    ov._reload_skills = lambda *a, **k: reload_calls.append(1)
+    ov._set_note(0, "现任技能")
+    assert demo["skills"][0]["note"] == "现任技能"
+    assert not reload_calls, "备注保存不应重铺列表"
+    assert ov.skillBars.itemAt(0).widget()._title._full == "现任技能"
+    ov._reload_skills = orig_reload
+    ov._reload_skills()  # 重铺后标题仍显示备注（note 优先于英文原名）
+    assert ov.skillBars.itemAt(0).widget()._title._full == "现任技能"
+
+    # 重装同款：备注跟过去（同 source 替换时继承）
+    ov._skill_installed({"ok": True, "msg": "", "data": [
+        {"name": "create-partner", "description": "d2c", "body": "b2c",
+         "source": "github.com/NatalieCao323/partner-skill"}]})
+    assert [s["name"] for s in demo["skills"]].count("create-partner") == 1
+    assert demo["skills"][0].get("note") == "现任技能", demo["skills"][0]
+
+    # 留空 = 清备注，恢复显示原名
+    ov._set_note(0, "")
+    assert demo["skills"][0]["note"] == ""
+    assert ov.skillBars.itemAt(0).widget()._title._full == "create-partner"
+
+    # 老条目（没 source）按名字认亲替换时，备注也跟过去
+    demo["skills"].append({"name": "old-bare", "description": "d", "body": "b",
+                           "source": "", "note": "老备注", "enabled": True})
+    ov._skill_installed({"ok": True, "msg": "", "data": [
+        {"name": "old-bare", "description": "d2", "body": "b2",
+         "source": "someone/old-bare"}]})
+    got = [s for s in demo["skills"] if s["name"] == "old-bare"]
+    assert len(got) == 1 and got[0]["note"] == "老备注", got
+    print("overlay multi-skill ok:", [s["name"] for s in demo["skills"]])

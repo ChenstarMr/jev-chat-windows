@@ -52,6 +52,11 @@ s.save(skills_data=[dict(A, enabled=True)])
 text = s.skill_text()
 assert A["body"] in text and A["name"] in text, text[:120]
 
+# 备注跟着条目走：普通保存不洗掉（界面给英文技能起的中文名）
+s.save(skills_data=[dict(A, enabled=True, note="现任技能")])
+s.save(debug_view_on=False)  # 普通保存
+assert s.skills_list()[0]["note"] == "现任技能"
+
 # 清空：列表落成 []
 s.save(skills_data=[])
 assert s.skills_list() == [] and json.loads(Path(s._CONFIG).read_text(encoding="utf-8"))["skills"] == []

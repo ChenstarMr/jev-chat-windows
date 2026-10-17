@@ -14,9 +14,9 @@ from PySide6.QtWidgets import (
 )
 from qfluentwidgets import (
     BodyLabel, CardWidget, CheckBox, ComboBox, EditableComboBox, FluentIcon as FIF,
-    HyperlinkButton, IndeterminateProgressBar, LineEdit, PasswordLineEdit, PlainTextEdit,
-    PrimaryPushButton, PushButton, ScrollArea, SpinBox, SwitchButton, Theme, TransparentToolButton,
-    setCustomStyleSheet, setFont, setTheme, setThemeColor,
+    HyperlinkButton, IndeterminateProgressBar, LineEdit, MessageBoxBase, PasswordLineEdit,
+    PlainTextEdit, PrimaryPushButton, PushButton, ScrollArea, SpinBox, SwitchButton, Theme,
+    TransparentToolButton, setCustomStyleSheet, setFont, setTheme, setThemeColor,
 )
 
 from app import chatapps, i18n, settings
@@ -163,6 +163,46 @@ class _Fetched(QObject):
 class _SkillDone(QObject):
     """装技能的后台线程 → 主线程：{"ok": bool, "msg": str, "data": dict|None}。"""
     done = Signal(object)
+
+
+class _SkillBar(_Surface):
+    """技能条：双击空白处（名字/描述那一块）改备注，给英文技能起个自己看得懂的名字。
+    开关和删除按钮自己吃掉鼠标事件，不会误触。"""
+
+    def __init__(self, on_note):
+        super().__init__(accent=True)
+        self._on_note = on_note
+        self._title = None  # 备注编辑后原地刷新标题用，不重铺整个列表
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.LeftButton and self._on_note:
+            self._on_note()
+        super().mouseDoubleClickEvent(event)
+
+    def set_title(self, text, tooltip):
+        """改标题与提示：备注保存后调用，单条原地刷新。"""
+        if self._title is not None:
+            self._title.setFull(text)
+            self._title.setToolTip(tooltip)
+
+
+class _NoteBox(MessageBoxBase):
+    """技能备注输入框：一行文本，留空 = 清掉备注恢复显示原名。"""
+
+    def __init__(self, name, current, parent):
+        super().__init__(parent)
+        self.viewLayout.addWidget(_label(T("给技能加个备注"), 14, "#304c3c", True))
+        origin = _label(T("技能原名：") + name, 12, _MUTED)
+        self.viewLayout.addWidget(origin)
+        self.noteEdit = LineEdit()
+        self.noteEdit.setText(current)
+        self.noteEdit.setClearButtonEnabled(True)
+        self.noteEdit.setPlaceholderText(T("起个自己看得懂的名字，留空恢复原名"))
+        bind(self.noteEdit, "技能备注", "setAccessibleName")
+        self.viewLayout.addWidget(self.noteEdit)
+        self.yesButton.setText(T("保存"))
+        self.cancelButton.setText(T("取消"))
+        self.widget.setMinimumWidth(360)
 
 
 class _TitleBar(QWidget):
@@ -675,6 +715,7 @@ class Overlay:
             "装「人设/口吻包」（SKILL.md 形态，比如 github.com/hotcoffeeshake/tong-jincheng-skill），"
             "三条候选就借它的视角和口吻写。仓库里 SKILL.md 在哪个子目录都认，也吃 .md 直链、"
             "Gitee、本地文件夹（嵌套的会一次装齐）和 zip；能装多个，每条自己的开关，超长正文只装开头 4000 字。"
+            "双击技能条可以加备注，给英文技能起个自己看得懂的名字。"
         )
         box.addWidget(self.skillHint)
         body.addWidget(skill)
@@ -954,21 +995,26 @@ class Overlay:
                 w.hide()  # 先藏再删：deleteLater 要等事件循环，不先藏会和重铺的条目叠一帧，看着在抽搐
                 w.deleteLater()
         for index, s in enumerate(settings.skills_list()):
-            bar = _Surface(accent=True)
+            note = str(s.get("note") or "").strip()
+            name = str(s.get("name") or "技能")
+            bar = _SkillBar(lambda i=index: self._edit_note(i))
             row = QHBoxLayout(bar)
             row.setContentsMargins(12, 8, 12, 8)
             row.setSpacing(10)
             col = QVBoxLayout()
             col.setSpacing(0)
-            name = _ElideLabel(size=13, color="#233c2f", bold=True)
-            name.setFull(str(s.get("name") or "技能"))
-            name.setToolTip(str(s.get("name") or ""))
+            title = _ElideLabel(size=13, color="#233c2f", bold=True)
+            # 标题优先显示用户备注（英文技能名认不出来是常态），没备注回原名
+            title.setFull(note or name)
+            title.setToolTip(f"{T('双击可加备注')}（{name}）" if not note
+                             else f"{T('原名：')}{name}\n{T('双击可改备注')}")
             desc = _ElideLabel(size=11, color=_MUTED)
             desc.setFull(str(s.get("description") or "").strip())
             desc.setToolTip(str(s.get("body") or ""))
-            col.addWidget(name)
+            col.addWidget(title)
             col.addWidget(desc)
             row.addLayout(col, 1)
+            bar._title = title
             switch = SwitchButton(bar)
             bind(switch, "启动", "setOnText")
             bind(switch, "停用", "setOffText")
@@ -995,6 +1041,31 @@ class Overlay:
         if 0 <= index < len(items):
             items[index]["enabled"] = bool(on)
             settings.save(skills_data=items)
+
+    def _edit_note(self, index):
+        """双击技能条：改备注。英文技能名认不出来是常态，备注就是给它起个自己看得懂的名字；
+        只影响界面显示，喂给起草模型的还是原名和正文。"""
+        items = settings.skills_list()
+        if not (0 <= index < len(items)):
+            return
+        box = _NoteBox(str(items[index].get("name") or "技能"),
+                       str(items[index].get("note") or ""), self)
+        if box.exec():
+            self._set_note(index, box.noteEdit.text().strip())
+
+    def _set_note(self, index, note):
+        """备注落盘 + 那一条原地刷新标题，不重铺列表（重铺又是一场动画抽搐）。"""
+        items = settings.skills_list()
+        if not (0 <= index < len(items)):
+            return
+        items[index]["note"] = note
+        settings.save(skills_data=items)
+        bar = self.skillBars.itemAt(index)
+        if bar is not None and getattr(bar.widget(), "_title", None) is not None:
+            name = str(items[index].get("name") or "技能")
+            bar.widget().set_title(note or name,
+                                   f"{T('原名：')}{name}\n{T('双击可改备注')}" if note
+                                   else f"{T('双击可加备注')}（{name}）")
 
     def _install_skill(self):
         """「安装技能」：GitHub/Gitee/.md 直链/本地路径，网络/文件 IO 丢后台线程，结果走信号回来。"""
@@ -1031,14 +1102,30 @@ class Overlay:
             return
         items = settings.skills_list()
         new = [dict(s, enabled=True) for s in result["data"]]
-        sources = {str(s.get("source") or "") for s in new if s.get("source")}
-        names = {str(s.get("name") or "") for s in new}
-        # 同 source 的旧条目替换，不同来源的照常追加（装多少条都留着，互不顶掉）；
-        # 老版本装的条目没盖 source，按名字认亲，免得重装同款出双份
-        kept = [s for s in items
-                if str(s.get("source") or "") not in sources
-                and (str(s.get("source") or "") or str(s.get("name") or "")) not in names]
-        self._set_skills(kept + new)
+        # 同 source 的旧条目替换、老版本没盖 source 的按名字认亲，其余照常追加（装多少条都留着，
+        # 互不顶掉）。替换发生在原位置（列表不重排）；被替换条目的备注跟过去——重装同款，
+        # 辛苦起的备注不丢
+        new_by_source, new_by_name = {}, {}
+        for s in new:
+            src = str(s.get("source") or "")
+            if src:
+                new_by_source.setdefault(src, []).append(s)
+            new_by_name.setdefault(str(s.get("name") or ""), []).append(s)
+        used, merged = set(), []
+        for s in items:
+            src = str(s.get("source") or "")
+            bucket = new_by_source.get(src) if src else new_by_name.get(str(s.get("name") or ""))
+            repl = next((c for c in bucket or [] if id(c) not in used), None)
+            if repl is not None:
+                used.add(id(repl))
+                note = str(s.get("note") or "").strip()
+                if note and not str(repl.get("note") or "").strip():
+                    repl["note"] = note
+                merged.append(repl)
+            else:
+                merged.append(s)
+        merged += [s for s in new if id(s) not in used]
+        self._set_skills(merged)
         self.skillEdit.clear()
         names = "、".join(str(s.get("name") or "技能") for s in result["data"])
         self._settings_feedback(lambda: T("技能「{name}」已安装，下一次生成开始生效。").format(name=names))
