@@ -127,14 +127,17 @@ def main() -> int:
                      "style": "话少，基本不用标点，急了才发感叹号", "thinking": False,
                      "check_update": True, "debug_view": args.state == "debug",
                      "app": "auto", "lang": "zh",
-                     # 演示里装一个技能，让设置页的技能卡片有东西可看
-                     "skill": {} if args.state == "setup" else
-                     {"name": "tong-jincheng-perspective",
-                      "description": "童锦程视角：以「深情祖师爷」、「情感内容创作者」的思维框架来看待人际关系、"
-                                     "社交与表达，用合成聊天预览 Qt 界面时也保持同一口吻（演示用长描述）",
-                      "body": "技能演示：三条候选都带一股直给的深情劲儿。",
-                      "source": "github.com/hotcoffeeshake/tong-jincheng-skill"},
-                     "skill_enabled": True}
+                     # 演示里装两个技能，让设置页的技能列表有东西可看（多技能各带开关）
+                     "skills": [] if args.state == "setup" else
+                     [{"name": "tong-jincheng-perspective",
+                       "description": "童锦程视角：以「深情祖师爷」、「情感内容创作者」的思维框架来看待人际关系、"
+                                      "社交与表达，用合成聊天预览 Qt 界面时也保持同一口吻（演示用长描述）",
+                       "body": "技能演示：三条候选都带一股直给的深情劲儿。",
+                       "source": "github.com/hotcoffeeshake/tong-jincheng-skill", "enabled": True},
+                      {"name": "create-partner",
+                       "description": "把现任蒸馏成 AI Skill：关系状态机 × 策略选择器 × 反事实模拟引擎（演示）",
+                       "body": "技能演示：安抚有策略，调侃有分寸。",
+                       "source": "github.com/NatalieCao323/partner-skill", "enabled": False}]}
 
     def save_demo_settings(relationship_text=None, context_n=None, *, jev_provider_text=None,
                            jev_key_text=None, jev_model_text=None, jev_base_url_text=None,
@@ -144,11 +147,9 @@ def main() -> int:
                            reply_target_on=None, style_text=None, thinking_on=None,
                            check_update_on=None, debug_view_on=None,
                            app_text=None, lang_text=None,
-                           skill_data=None, skill_enabled_on=None):
-        if skill_data is not None:
-            demo_settings["skill"] = dict(skill_data) if skill_data else {}
-        if skill_enabled_on is not None:
-            demo_settings["skill_enabled"] = bool(skill_enabled_on)
+                           skills_data=None):
+        if skills_data is not None:
+            demo_settings["skills"] = [dict(s) for s in skills_data]
         if relationship_text:
             demo_settings["relationship"] = relationship_text
         if context_n is not None:
@@ -208,10 +209,11 @@ def main() -> int:
         check_update=lambda: demo_settings["check_update"],
         debug_view=lambda: demo_settings["debug_view"],
         app=lambda: demo_settings["app"],
-        skill_installed=lambda: demo_settings["skill"],
-        skill_enabled=lambda: demo_settings["skill_enabled"],
-        skill_text=lambda: (skills.skill_block(demo_settings["skill"])
-                            if demo_settings["skill_enabled"] and demo_settings["skill"] else ""),
+        skills_list=lambda: [dict(s) for s in demo_settings["skills"]],
+        skill_text=lambda: "\n\n".join(
+            skills.skill_block(dict(s, enabled=True))
+            for s in demo_settings["skills"]
+            if s.get("enabled")) if any(s.get("enabled") for s in demo_settings["skills"]) else "",
         save=save_demo_settings,
     ):
         from PySide6.QtCore import QTimer
@@ -257,8 +259,8 @@ def main() -> int:
                 ov.set_status("演示模式：分析失败，请检查网络和密钥，等待下一条消息后重试。", kind="error")
             elif args.state in ("settings", "nojev"):
                 ov.open_settings()
-                if args.state == "settings":  # 滚到「技能」卡：装好的技能条是这页要看的重点
-                    QTimer.singleShot(0, lambda: ov.settingsPage.ensureWidgetVisible(ov.skillBar, 0, 0))
+                if args.state == "settings":  # 滚到「技能」卡：装好的技能列表是这页要看的重点
+                    QTimer.singleShot(0, lambda: ov.settingsPage.ensureWidgetVisible(ov.skillBars.containerWidget() if hasattr(ov.skillBars, "containerWidget") else ov.skillEdit, 0, 0))
             elif args.state == "paused":
                 ov.set_capture(False)
 

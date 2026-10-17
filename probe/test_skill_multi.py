@@ -1,0 +1,76 @@
+# -*- coding: utf-8 -*-
+"""多技能 UI 逻辑回归（离屏）：技能列表渲染 N 条、开关只动那一条、删除只删那一条、
+安装追加（同 source 替换）。app.settings 整体换成假对象，不碰真机配置。"""
+import os
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from PySide6.QtWidgets import QApplication
+
+demo = {"skills": [
+    {"name": "tong-jincheng-perspective", "description": "d1", "body": "b1",
+     "source": "github.com/hotcoffeeshake/tong-jincheng-skill", "enabled": True},
+    {"name": "create-partner", "description": "d2", "body": "b2",
+     "source": "github.com/NatalieCao323/partner-skill", "enabled": False}],
+    "relationship": "friends", "context": 10, "style": "", "lang": "zh",
+    "reply_target": False, "thinking": False, "check_update": True, "debug_view": False,
+    "app": "auto", "use_jev": True, "jev_provider": "openrouter", "jev_model": "",
+    "jev_base_url": "", "draft_provider": "deepseek", "draft_model": "", "draft_base_url": ""}
+
+saved = {}
+
+
+def fake_save(*_a, **kw):
+    if kw.get("skills_data") is not None:
+        demo["skills"] = [dict(s) for s in kw["skills_data"]]
+        saved["calls"] = saved.get("calls", 0) + 1
+
+
+fake = SimpleNamespace(
+    relationship=lambda: demo["relationship"], context=lambda: demo["context"],
+    style=lambda: demo["style"], language=lambda: demo["lang"],
+    reply_target=lambda: demo["reply_target"], thinking=lambda: demo["thinking"],
+    check_update=lambda: demo["check_update"], debug_view=lambda: demo["debug_view"],
+    app=lambda: demo["app"], use_jev=lambda: demo["use_jev"],
+    jev_provider=lambda: demo["jev_provider"], jev_model=lambda: demo["jev_model"],
+    jev_base_url=lambda: demo["jev_base_url"], draft_provider=lambda: demo["draft_provider"],
+    draft_model=lambda: demo["draft_model"], draft_base_url=lambda: demo["draft_base_url"],
+    skills_list=lambda: [dict(s) for s in demo["skills"]], skill_text=lambda: "",
+    has_key=lambda: True, has_jev_key=lambda: True, has_llm_key=lambda: True,
+    jev_key=lambda: "k", llm_key=lambda: "k", save=fake_save)
+
+app = QApplication([])
+import app.overlay  # noqa: E402  先把 app.settings 绑定进模块命名空间，patch 才有落点
+from unittest.mock import patch  # noqa: E402
+
+with patch("app.overlay.settings", fake):
+    from app.overlay import Overlay
+
+    ov = Overlay(on_fill=lambda t: None, result_of=lambda t: None)
+    ov.open_settings()
+    assert ov.skillBars.count() == 2, ov.skillBars.count()
+
+    ov._skill_toggled(1, True)  # 只动第二条
+    assert demo["skills"][1]["enabled"] is True and demo["skills"][0]["enabled"] is True
+    ov._skill_toggled(0, False)
+    assert demo["skills"][0]["enabled"] is False and demo["skills"][1]["enabled"] is True
+
+    ov._delete_skill(0)  # 只删第一条
+    assert [s["name"] for s in demo["skills"]] == ["create-partner"]
+    assert ov.skillBars.count() == 1
+
+    # 安装追加：source 相同的旧条目被替换，不重复
+    ov._skill_installed({"ok": True, "msg": "", "data": [
+        {"name": "create-partner", "description": "d2b", "body": "b2b",
+         "source": "github.com/NatalieCao323/partner-skill"},
+        {"name": "new-one", "description": "d3", "body": "b3",
+         "source": "github.com/a/new-skill"}]})
+    names = [s["name"] for s in demo["skills"]]
+    assert names == ["create-partner", "new-one"], names
+    assert all(s.get("enabled") is True for s in demo["skills"]), demo["skills"]
+    assert ov.skillBars.count() == 2
+    print("overlay multi-skill ok:", names)

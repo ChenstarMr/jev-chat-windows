@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-"""settings 技能持久化回归：普通保存不得洗掉 skill / skill_enabled（用户实测炸过两次）。
-临时 config + 封死 env/注册表写入，不碰真机配置。"""
+"""settings 技能持久化回归：普通保存不得洗掉技能列表（用户实测炸过两次）；
+老的单数 skill 字段自动迁移成 skills 列表。临时 config + 封死 env/注册表写入。"""
 import json
 import sys
 import tempfile
@@ -15,33 +15,39 @@ s._read_env = lambda name: ""       # 不读进程环境/注册表
 s._set_key = lambda name, value: None
 s._notify_env = lambda: None
 
-SKILL = {"name": "童锦程视角", "description": "d", "body": "正文", "source": "github.com/a/b"}
+A = {"name": "tong-jincheng-perspective", "description": "d", "body": "正文A",
+     "source": "github.com/hotcoffeeshake/tong-jincheng-skill", "enabled": True}
+B = {"name": "create-partner", "description": "d", "body": "正文B",
+     "source": "github.com/NatalieCao323/partner-skill", "enabled": False}
 
-s.save(skill_data=dict(SKILL), skill_enabled_on=True)
-assert s.skill_installed() == SKILL and s.skill_enabled() is True
+# 旧格式迁移：手工写一份老版 config（单数 skill + skill_enabled）
+Path(s._CONFIG).write_text(json.dumps({"skill": {k: A[k] for k in ("name", "description", "body", "source")},
+                                       "skill_enabled": False,
+                                       "relationship": "friends"}, ensure_ascii=False), encoding="utf-8")
+legacy = s.skills_list()
+assert len(legacy) == 1 and legacy[0]["name"] == A["name"] and legacy[0]["enabled"] is False
 
-# 各种「普通保存」——曾经的洞：每一次都会把 skill 整个抹掉
+# 一次普通保存：迁移正式落成 skills 列表，内容不丢
 s.save(lang_text="ko")
-s.save(debug_view_on=False)
-s.save(use_jev_on=False)
-s.save(relationship_text="朋友")
-assert s.skill_installed() == SKILL, "普通保存洗掉了技能！"
-assert s.skill_enabled() is True, "普通保存洗掉了开关！"
+disk = json.loads(Path(s._CONFIG).read_text(encoding="utf-8"))
+assert [x["name"] for x in disk["skills"]] == [A["name"]] and disk["skills"][0]["enabled"] is False
 
-# 磁盘上的 JSON 也得真的带着它
-assert json.loads(Path(s._CONFIG).read_text(encoding="utf-8"))["skill"] == SKILL
+# 多技能：装两个、开关只动一条、普通保存原样保留
+s.save(skills_data=[dict(A), dict(B)])
+assert [x["name"] for x in s.skills_list()] == [A["name"], B["name"]]
+now = s.skills_list()
+now[0]["enabled"] = False
+s.save(skills_data=now)
+s.save(debug_view_on=False)  # 普通保存：技能列表必须原样保留
+s.save(lang_text="en")
+got = s.skills_list()
+assert got[0]["enabled"] is False and got[1]["enabled"] is False, got
+assert s.skill_text() == "", "全停用后技能段应为空"
 
-# 只关开关：技能体留着；再开回来
-s.save(skill_enabled_on=False)
-assert s.skill_installed() == SKILL and s.skill_enabled() is False
-s.save(skill_enabled_on=True)
+# 磁盘上的 JSON 真的带着列表
+assert len(json.loads(Path(s._CONFIG).read_text(encoding="utf-8"))["skills"]) == 2
 
-# 显式删除：键从磁盘上消失
-s.save(skill_data={})
-assert s.skill_installed() == {} and json.loads(Path(s._CONFIG).read_text(encoding="utf-8")).get("skill") is None
-
-# 重装 + 普通保存，再守一遍
-s.save(skill_data=dict(SKILL), skill_enabled_on=True)
-s.save()
-assert s.skill_installed() == SKILL
-print("settings skill persistence ok")
+# 清空：列表落成 []
+s.save(skills_data=[])
+assert s.skills_list() == [] and json.loads(Path(s._CONFIG).read_text(encoding="utf-8"))["skills"] == []
+print("settings skills persistence ok")

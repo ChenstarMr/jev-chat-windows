@@ -23,6 +23,7 @@ _DEFAULT_RELATIONSHIP = "romantic partners"
 _DEFAULT_CONTEXT = 10
 _DEFAULT_JEV = "openrouter"
 _DEFAULT_DRAFT = "deepseek"
+_MAX_SKILL_CHARS = 12000  # 所有启用的技能拼一起的正文上限：技能再多，起草的预算也有个顶
 
 
 def _read(name: str, default=None):
@@ -71,27 +72,41 @@ def use_jev() -> bool:
     return bool(_read("use_jev", True))
 
 
-def skill_installed() -> dict:
-    """装好的技能（core/skills 安装时写进来的 {name, description, body, source}）；没装是空 dict。"""
-    v = _read("skill")
-    return v if isinstance(v, dict) and str(v.get("body") or "").strip() else {}
+def skills_list() -> list:
+    """装好的技能（列表，每条 {name, description, body, source, enabled}）。没装是空列表。
+    兼容老配置：只有单数 "skill" 字段时迁成一条 enabled 跟着 skill_enabled 走。"""
+    v = _read("skills")
+    if isinstance(v, list):
+        out = []
+        for item in v:
+            if isinstance(item, dict) and str(item.get("body") or "").strip():
+                item = dict(item)
+                item.setdefault("enabled", True)
+                out.append(item)
+        return out
+    legacy = _read("skill")
+    if isinstance(legacy, dict) and str(legacy.get("body") or "").strip():
+        legacy = dict(legacy)
+        legacy["enabled"] = skill_enabled()
+        return [legacy]
+    return []
 
 
 def skill_enabled() -> bool:
-    """技能总开关：装了技能才生效，默认开。"""
+    """老的单技能总开关，默认开。留着只为兼容旧 config 的读取迁移，新存档走 skills[].enabled。"""
     return bool(_read("skill_enabled", True))
 
 
 def skill_text() -> str:
-    """拼好的技能段（core/skills.skill_block）。没装/关了/坏数据都返回空串，起草当没这回事。"""
-    if not skill_enabled():
-        return ""
-    data = skill_installed()
-    if not data:
-        return ""
-    from core import skills  # 局部 import：settings 早于 core 初始化时也不炸
-
-    return skills.skill_block(data)
+    """所有启用的技能拼好的段（core/skills.skill_block 逐条相连）。
+    总量截到 _MAX_SKILL_CHARS：技能再多，塞给起草模型的预算也有个顶。"""
+    blocks = [skills.skill_block(s) for s in skills_list() if s.get("enabled")]
+    text = "".join(blocks)
+    if len(text) > _MAX_SKILL_CHARS:
+        cut = text.rfind("\n\n", 0, _MAX_SKILL_CHARS)
+        text = text[:cut if cut > _MAX_SKILL_CHARS // 2 else _MAX_SKILL_CHARS]
+        text += "\n\n（技能太多，只装了前面这些的正文）"
+    return text.strip()
 
 def draft_provider() -> str:
     """起草走哪家（见 core/providers.DRAFT_PROVIDERS）。老配置里的 openrouter/deepseek 照样认。"""
@@ -204,9 +219,9 @@ def save(relationship_text: str | None = None, context_n: int | None = None, *,
          style_text: str | None = None, thinking_on: bool | None = None,
          check_update_on: bool | None = None, debug_view_on: bool | None = None,
          app_text: str | None = None, lang_text: str | None = None,
-         skill_data: dict | None = None, skill_enabled_on: bool | None = None) -> None:
+         skills_data: list | None = None) -> None:
     """每个参数为空/None = 保留当前值。两把 key 写进程环境 + HKCU\\Environment，不写任何文件。
-    skill_data：None = 保留；{} = 删除技能；其它 dict = 整个替换（core/skills 安装成功时写入）。"""
+    skills_data：None = 保留；list = 整个替换（core/skills.install 的结果，[] = 清空）。"""
     jev = jev_provider_text if jev_provider_text in JEV_PROVIDERS else jev_provider()
     draft = draft_provider_text if draft_provider_text in DRAFT_PROVIDERS else draft_provider()
     # 没重填就把老变量里的值抄进新名字，迁移一次性做完（_get_key 已经退回读过老的了）
@@ -239,13 +254,15 @@ def save(relationship_text: str | None = None, context_n: int | None = None, *,
         "debug_view": flag(debug_view_on, debug_view),
         "app": keep(app_text, "app") or "auto",
     }
-    # skill / skill_enabled 没显式传就原样保留。save 每次都整体重写 config.json，上面的
-    # data 是从零拼的新 dict——少拼一个键，保存一次就抹掉一项：装好的技能被一次普通的
-    # 「保存设置 / 切语言 / 开关调试视图」洗掉（退出重开技能没了、装完点保存就没了，都是这个洞）。
-    skill_now = (dict(skill_data) if skill_data else None) if skill_data is not None else _read("skill")
-    if skill_now is not None:
-        data["skill"] = skill_now
-    data["skill_enabled"] = skill_enabled() if skill_enabled_on is None else bool(skill_enabled_on)
+    # skills 没显式传就原样保留。save 每次都整体重写 config.json，上面的 data 是从零拼的
+    # 新 dict——少拼一个键，保存一次就抹掉一项：装好的技能被一次普通的「保存设置 / 切语言 /
+    # 开关调试视图」洗掉（退出重开技能没了、装完点保存就没了，都是这个洞）。
+    # 写的时候统一落成 "skills" 列表，老的单数 "skill" 字段读进来迁掉。
+    if skills_data is None:
+        skills_now = skills_list()
+    else:
+        skills_now = [dict(s) for s in skills_data if isinstance(s, dict) and str(s.get("body") or "").strip()]
+    data["skills"] = skills_now
     lang = _read("lang") if lang_text is None else lang_text.strip().lower()
     if lang is not None:
         data["lang"] = lang
