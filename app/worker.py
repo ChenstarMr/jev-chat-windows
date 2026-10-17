@@ -44,13 +44,17 @@ def _confirm_title(title, name, readers, pending):
 def _handle_verify(verify_q, cap, app, q):
     """「填入」前的现场核对：父进程问「现在开的是哪个会话」，拿最新一帧重新认一遍
     会话名和消息区，从 q 回 ("verified", id, 想填的会话名, 现读的会话名, 现在的消息区)。
-    title=None = 暂停中/没法核对（父进程按老样子直接填）；title="" = 在采但读不出（父进程不敢填）。
-    核对不等停稳：宁可毛糙也要「现在」，等停稳恰恰会放过刚切走的那零点几秒。"""
+    title=None = 暂停中/没法核对（父进程按老样子直接填）；title="" = 在采但读不出（父进程
+    会用下一帧自动重核，见 main 的 verified 分支）。核对不等停稳：宁可毛糙也要「现在」，
+    等停稳恰恰会放过刚切走的那零点几秒。
+    返回是否答过至少一个请求：调用方刚答完就先跳过当轮重活，别让下一次核对排在大 OCR 后面。"""
+    answered = False
     while True:
         try:
             vid, want = verify_q.get_nowait()
         except Empty:
-            return
+            return answered
+        answered = True
         title, area4 = (None, None) if cap is None else ("", None)
         full = cap.latest() if cap is not None else None
         if full is not None:
@@ -93,9 +97,13 @@ def run(q, hwnd, enabled, debug_on, app_key=None, verify_q=None):
     while True:
         if verify_q is not None:
             try:
-                _handle_verify(verify_q, cap, app, q)  # cap=None（暂停中）也答：父进程按老路直接填
+                answered = _handle_verify(verify_q, cap, app, q)  # cap=None（暂停中）也答：父进程按老路直接填
             except Exception:
+                answered = False
                 _err(q)  # 一次核对出错不能带垮整个采集子进程，下一圈接着答
+            if answered:
+                time.sleep(0.05)
+                continue  # 刚答完核对：这一圈让给它，别让它排在一次 250~800ms 的 OCR 后面
         if not enabled.is_set():
             if cap is not None:
                 cap.stop()
@@ -196,12 +204,12 @@ if __name__ == "__main__":
             return self._f
 
     vq, oq = _queue.Queue(), _queue.Queue()
-    _handle_verify(vq, None, chatapps.DEFAULT, oq)
+    assert _handle_verify(vq, None, chatapps.DEFAULT, oq) is False  # 没请求就别吭声
     assert oq.empty()  # 没请求就别吭声
     vq.put((7, "某会话"))
-    _handle_verify(vq, None, chatapps.DEFAULT, oq)
+    assert _handle_verify(vq, None, chatapps.DEFAULT, oq) is True
     assert oq.get_nowait() == ("verified", 7, "某会话", None, None)
     vq.put((8, "某会话"))
-    _handle_verify(vq, _Cap(None), chatapps.DEFAULT, oq)
+    assert _handle_verify(vq, _Cap(None), chatapps.DEFAULT, oq) is True
     assert oq.get_nowait() == ("verified", 8, "某会话", "", None)
     print("worker._confirm_title ok")

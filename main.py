@@ -18,6 +18,7 @@ from collections import deque
 from app import chatapps, settings, update, worker
 from app.capture import find_chat_hwnd
 from app.fill import fill
+from app.ocr import similar  # 核对那帧 OCR 会抖，会话名按相似度放行（采集侧同一条规则）
 from app.overlay import Overlay
 from app.version import VERSION
 from core.engine import analyze
@@ -256,23 +257,39 @@ def drain():
             continue
         if kind == "verified":  # 填入前的现场核对回来了：会话对上才真的填
             _, vid, want, title, area = msg
-            entry = pending_fills.pop(vid, None)
-            ov.set_fills_enabled(True)
+            entry = pending_fills.get(vid)
             if entry is None:
+                ov.set_fills_enabled(True)
                 continue  # 早作废了（超时/采集死了），别填两遍
             if title is None:  # 采集没在跑（暂停/没窗口）：核对不了，按老样子直接填
+                pending_fills.pop(vid, None)
+                ov.set_fills_enabled(True)
                 _fill_now(entry[0])
                 continue
             if area:
                 state["area"] = area  # 核对顺手把此刻的消息区坐标也带来了，填的时候用它
             if not title or area is None:
+                if time.time() - entry[1] < 2.0:
+                    # 这一帧读不出（多半刚切会话/动画中）：别让人手动「再点一次」，
+                    # 下一帧自动再核对；请求留在 pending_fills 里，按钮保持禁用
+                    verify_q.put((vid, want))
+                    continue
+                pending_fills.pop(vid, None)
+                ov.set_fills_enabled(True)
                 ov.set_status("没敢填入：核对时读不到当前会话，请再点一次填入。", "warning")
-            elif title != want:
+                continue
+            if title != want and not similar(title, want):
+                # 严格相等之外放行相似名：核对那帧的头部 OCR 会抖（「小分队」↔「小分认」），
+                # 真切换对不上时照样拦——宁可让用户再点一次，不能填进别人的窗口
+                pending_fills.pop(vid, None)
+                ov.set_fills_enabled(True)
                 ov.set_status(lambda w=want, t=title:
                               T("没敢填入：微信现在开的是「{t}」，候选是给「{w}」写的").format(t=t, w=w),
                               "warning")
-            else:
-                _fill_now(entry[0])
+                continue
+            pending_fills.pop(vid, None)
+            ov.set_fills_enabled(True)
+            _fill_now(entry[0])
             continue
         if kind == "dead":  # 采集彻底停了（聊天窗口关了之类），这才是真的要清状态
             state["area"] = None
@@ -327,8 +344,9 @@ def tick():
     try:
         drain()
         now = time.time()
-        for vid in [v for v, (_, t0) in pending_fills.items() if now - t0 > 2.0]:
-            # 子进程一直没答（卡死了/队列丢了）：作废，别让按钮永远禁着
+        for vid in [v for v, (_, t0) in pending_fills.items() if now - t0 > 2.5]:
+            # 子进程一直没答（卡死了/队列丢了）：作废，别让按钮永远禁着。
+            # 2.5 > 核对自动重试的 2 秒预算：先让重试跑完，超时只兜「子进程真的没响应」。
             pending_fills.pop(vid, None)
             ov.set_fills_enabled(True)
             ov.set_status("核对会话超时（采集没响应），没敢填入；请再试一次。", "warning")
