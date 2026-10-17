@@ -118,7 +118,9 @@ class Capture:
 
         self.settle, self.max_wait = settle, max_wait
         self.shape = self.area = self.last = self.pending = None
-        self.latest = None  # 最近一帧（不等停稳）：填入前的现场核对要用最新的
+        self.last_frame = None  # 最近一帧（不等停稳）：填入前的现场核对要用最新的。
+        # ponytail: 别叫 self.latest——Capture.latest() 是方法，实例属性会把方法遮蔽掉，
+        # cap.latest() 就成了「调用一个 numpy 数组」（v0.1.24 在点填入时必炸的根因）。
         self.t = self.t0 = 0.0
         # 包装层默认 cursor_capture=True，会去调 SetIsCursorCaptureEnabled。
         # 这个属性要 Win10 2004（build 19041）才有，1909 及更早直接抛 CursorConfigUnsupported。
@@ -132,7 +134,7 @@ class Capture:
         full = np.ascontiguousarray(frame.frame_buffer[:, :, :3][:, :, ::-1])  # BGRA → RGB；缓冲区回调后就没了，必须拷
         if full.max() == 0:
             return
-        self.latest = full  # 填入前的现场核对拿它当「此刻的画面」，不等停稳
+        self.last_frame = full  # 填入前的现场核对拿它当「此刻的画面」，不等停稳
         if self.area is None or full.shape != self.shape:
             self.shape, self.area = full.shape, chat_area(full)
         if self.area is None:
@@ -163,7 +165,7 @@ class Capture:
     def latest(self):
         """最近一帧，不等停稳。窗口没动时它就是当前画面；刚切了会话它是最快的新帧——
         现场核对（填入前）要的就是「现在」，宁可毛糙也不能拿半秒前的旧画面。"""
-        return self.latest
+        return self.last_frame
 
     def alive(self):
         return not self.ctl.is_finished()

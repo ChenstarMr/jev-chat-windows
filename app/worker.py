@@ -92,7 +92,10 @@ def run(q, hwnd, enabled, debug_on, app_key=None, verify_q=None):
     err_sig, err_at = "", 0.0  # 上一条帧错误的指纹/时刻：同一个错别每帧刷，10 秒催一次
     while True:
         if verify_q is not None:
-            _handle_verify(verify_q, cap, app, q)  # cap=None（暂停中）也答：父进程按老路直接填
+            try:
+                _handle_verify(verify_q, cap, app, q)  # cap=None（暂停中）也答：父进程按老路直接填
+            except Exception:
+                _err(q)  # 一次核对出错不能带垮整个采集子进程，下一圈接着答
         if not enabled.is_set():
             if cap is not None:
                 cap.stop()
