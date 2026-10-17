@@ -126,7 +126,13 @@ def main() -> int:
                      "draft_base_url": "", "reply_target": True,
                      "style": "话少，基本不用标点，急了才发感叹号", "thinking": False,
                      "check_update": True, "debug_view": args.state == "debug",
-                     "app": "auto", "lang": "zh"}
+                     "app": "auto", "lang": "zh",
+                     # 演示里装一个技能，让设置页的技能卡片有东西可看
+                     "skill": {} if args.state == "setup" else
+                     {"name": "童锦程视角", "description": "深情祖师爷的思维框架（演示）",
+                      "body": "技能演示：三条候选都带一股直给的深情劲儿。",
+                      "source": "github.com/hotcoffeeshake/tong-jincheng-skill"},
+                     "skill_enabled": True}
 
     def save_demo_settings(relationship_text=None, context_n=None, *, jev_provider_text=None,
                            jev_key_text=None, jev_model_text=None, jev_base_url_text=None,
@@ -135,7 +141,12 @@ def main() -> int:
                            llm_key_text=None, draft_model_text=None, draft_base_url_text=None,
                            reply_target_on=None, style_text=None, thinking_on=None,
                            check_update_on=None, debug_view_on=None,
-                           app_text=None, lang_text=None):
+                           app_text=None, lang_text=None,
+                           skill_data=None, skill_enabled_on=None):
+        if skill_data is not None:
+            demo_settings["skill"] = dict(skill_data) if skill_data else {}
+        if skill_enabled_on is not None:
+            demo_settings["skill_enabled"] = bool(skill_enabled_on)
         if relationship_text:
             demo_settings["relationship"] = relationship_text
         if context_n is not None:
@@ -170,6 +181,7 @@ def main() -> int:
             protocol, ["deepseek-flash", "deepseek-reasoner", "demo-model-a", "demo-model-b"])
 
     # 在创建 Overlay 前替换设置接口，整个事件循环期间都保持隔离。
+    from core import skills
     with patch("core.jev_client.list_models", fake_jev_models), patch(
             "core.llm.list_models", fake_llm_models), patch.multiple(
         settings,
@@ -194,6 +206,10 @@ def main() -> int:
         check_update=lambda: demo_settings["check_update"],
         debug_view=lambda: demo_settings["debug_view"],
         app=lambda: demo_settings["app"],
+        skill_installed=lambda: demo_settings["skill"],
+        skill_enabled=lambda: demo_settings["skill_enabled"],
+        skill_text=lambda: (skills.skill_block(demo_settings["skill"])
+                            if demo_settings["skill_enabled"] and demo_settings["skill"] else ""),
         save=save_demo_settings,
     ):
         from PySide6.QtCore import QTimer

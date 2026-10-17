@@ -70,6 +70,29 @@ def use_jev() -> bool:
     """要不要用 Jev 判断：默认开。关了整条链不碰 Jev，起草模型自己写候选、自己挑一条推荐。"""
     return bool(_read("use_jev", True))
 
+
+def skill_installed() -> dict:
+    """装好的技能（core/skills 安装时写进来的 {name, description, body, source}）；没装是空 dict。"""
+    v = _read("skill")
+    return v if isinstance(v, dict) and str(v.get("body") or "").strip() else {}
+
+
+def skill_enabled() -> bool:
+    """技能总开关：装了技能才生效，默认开。"""
+    return bool(_read("skill_enabled", True))
+
+
+def skill_text() -> str:
+    """拼好的技能段（core/skills.skill_block）。没装/关了/坏数据都返回空串，起草当没这回事。"""
+    if not skill_enabled():
+        return ""
+    data = skill_installed()
+    if not data:
+        return ""
+    from core import skills  # 局部 import：settings 早于 core 初始化时也不炸
+
+    return skills.skill_block(data)
+
 def draft_provider() -> str:
     """起草走哪家（见 core/providers.DRAFT_PROVIDERS）。老配置里的 openrouter/deepseek 照样认。"""
     v = _read("draft_provider")
@@ -180,8 +203,10 @@ def save(relationship_text: str | None = None, context_n: int | None = None, *,
          draft_base_url_text: str | None = None, reply_target_on: bool | None = None,
          style_text: str | None = None, thinking_on: bool | None = None,
          check_update_on: bool | None = None, debug_view_on: bool | None = None,
-         app_text: str | None = None, lang_text: str | None = None) -> None:
-    """每个参数为空/None = 保留当前值。两把 key 写进程环境 + HKCU\\Environment，不写任何文件。"""
+         app_text: str | None = None, lang_text: str | None = None,
+         skill_data: dict | None = None, skill_enabled_on: bool | None = None) -> None:
+    """每个参数为空/None = 保留当前值。两把 key 写进程环境 + HKCU\\Environment，不写任何文件。
+    skill_data：None = 保留；{} = 删除技能；其它 dict = 整个替换（core/skills 安装成功时写入）。"""
     jev = jev_provider_text if jev_provider_text in JEV_PROVIDERS else jev_provider()
     draft = draft_provider_text if draft_provider_text in DRAFT_PROVIDERS else draft_provider()
     # 没重填就把老变量里的值抄进新名字，迁移一次性做完（_get_key 已经退回读过老的了）
@@ -214,6 +239,10 @@ def save(relationship_text: str | None = None, context_n: int | None = None, *,
         "debug_view": flag(debug_view_on, debug_view),
         "app": keep(app_text, "app") or "auto",
     }
+    if skill_data is not None:  # {} = 删除；非空 dict = 安装/替换
+        data["skill"] = dict(skill_data) if skill_data else None
+    if skill_enabled_on is not None:
+        data["skill_enabled"] = bool(skill_enabled_on)
     lang = _read("lang") if lang_text is None else lang_text.strip().lower()
     if lang is not None:
         data["lang"] = lang

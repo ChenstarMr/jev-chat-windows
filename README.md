@@ -124,6 +124,11 @@ RapidOCR 自带的只有中英文模型，韩文整段都是乱码：同一个 K
 - **思考模式开关**：默认关；开了模型先想再写，更斟酌但慢好几倍、贵一些。
 - **参考上下文条数**：3~30，默认 10，起草和判断都按它取最近 N 条。
 - **说话风格**：一句话描述自己的口吻，补在「照着你最近发的消息模仿」之上。
+- **技能**：设置里可安装「人设/口吻包」（SKILL.md 形态，如
+  [tong-jincheng-skill](https://github.com/hotcoffeeshake/tong-jincheng-skill)）：填 GitHub 仓库
+  地址（或本地路径）一键安装，三条候选就借它的视角和口吻写。只影响起草怎么说——判断口径、
+  采集和发送一概不碰；身份设定与安全规则照旧压着技能，超长正文只装开头 4000 字（控制每条
+  消息的 token 成本），装在 `config.json` 里、随时启用/删除。
 - **响应式悬浮窗**：置顶、可拖可缩，最小 320×360，窄于 400 进紧凑模式。
 - **新版本提示**：启动时（可关）查一次 GitHub 最新版本号，有新版本会在标题栏下面出现一条提示，
   点「去下载」跳转 Release 页。
@@ -318,6 +323,7 @@ pyinstaller --noconfirm --clean jev.spec
 | 判断 · Base URL | 只有「自定义」来源才出现这一行 | `config.json` → `jev_base_url` |
 | 判断 · 密钥 | 上面选哪家就填哪家的 key。已配置时留空 = 保留；关掉「用 Jev 判断」就不用填 | 注册表 `HKCU\Environment` → `JEV_API_KEY` |
 | 判断 · 模型 | 可手打，也可点「获取模型」拉列表挑 | `config.json` → `jev_model`（空 = 该来源默认） |
+| 技能 | 安装/启用/删除「人设/口吻包」（SKILL.md，GitHub 仓库或本地路径）；启用后三条候选按技能的视角和口吻写，下一次生成生效 | `config.json` → `skill` / `skill_enabled` |
 | 起草 · 来源 | 上面那张表里的任意一家 | `config.json` → `draft_provider`（默认 `deepseek`） |
 | 起草 · Base URL | 只有两个「自定义」来源才出现这一行 | `config.json` → `draft_base_url` |
 | 起草 · 密钥 | 上面选哪家就填哪家的 key。已配置时留空 = 保留 | 注册表 `HKCU\Environment` → `LLM_API_KEY` |
@@ -371,6 +377,7 @@ core/                   Jev 判断内核，平台无关，跟安卓原版同一�
   jev_client.py         Jev 判断客户端：OpenRouter / 基元律动 / OpenCode Zen / 自定义（手写 urllib）/ TypeSafe 直连（typesafe-sdk）；脱敏、退避
   questions.py          7 道判断题 + build_state() + build_rank_question() + 判断小抄 guidance_text() / 中文标签 CHOICE_LABELS
   draft.py              起草 3 条候选：拼提示词、解析、过滤、不足时追问补齐；调用走 llm.py
+  skills.py             技能（SKILL.md 人设/口吻包）：GitHub/本地取下、front-matter 解析、截断、拼进起草 system
 tools/
   demo.py               端到端冒烟：拿一段写死的对话跑完整链（需 key + 联网）
   preview_ui.py         用合成数据预览界面（含 --state debug 的调试视图），不采集不联网不碰聊天窗口；可 --screenshot 出图

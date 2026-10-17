@@ -48,8 +48,16 @@ _OUT_PICK = ("输出：只输出一个 JSON 对象，别的什么都别写，形
              '{"replies": ["第一条", "第二条", "第三条"], "best": 1, "why": "一句话"}；'
              "replies 就是那 3 条消息本身（不要带「me:」之类的前缀），"
              "best 是你推荐第几条（1~3 的序号），why 是不超过 20 个字的一句理由。")
-SYSTEM = _RULES + "\n" + _OUT_ARRAY
-SYSTEM_PICK = _RULES + "\n" + _OUT_PICK
+_SYSTEM_ARRAY = _RULES + "\n" + _OUT_ARRAY
+_SYSTEM_PICK = _RULES + "\n" + _OUT_PICK
+
+
+def _system(skill_text: str = "", pick: bool = False) -> str:
+    """规则 + （可选）技能段 + 输出格式。技能（core/skills 拼好的那段）只许插在规则与
+    输出格式之间：它管「怎么说、往哪个视角想」，改不了身份设定，也改不了输出格式。"""
+    if not skill_text:
+        return _SYSTEM_PICK if pick else _SYSTEM_ARRAY
+    return _RULES + skill_text + "\n" + (_OUT_PICK if pick else _OUT_ARRAY)
 
 
 def _clean(x: str) -> str:
@@ -242,7 +250,7 @@ def draft_candidates(messages: list, relationship: str, provider: str = "deepsee
                      model: str | None = None, base_url: str | None = None,
                      timeout: float = 30, keep: int = 10,
                      reply_to: str | None = None, style: str = "", thinking: bool = False,
-                     guidance: str | None = None) -> list[str]:
+                     guidance: str | None = None, skill_text: str = "") -> list[str]:
     """messages: [(from, text)] 或 [(from, text, name)]，from ∈ {her, me}，name = 群里的发言人；
     只看最近 keep 条。返回最多 3 条中文候选（过滤后可能是 0 条，调用方要处理）。
 
@@ -250,6 +258,7 @@ def draft_candidates(messages: list, relationship: str, provider: str = "deepsee
     style: 用户自己描述的口吻（设置里的「说话风格」），空就只靠样本模仿。
     thinking: 思考模式，默认关（慢且贵）；开了模型会先想再写。设置里的开关。
     guidance: Jev 的判断小抄（core.questions.guidance_text），空就是盲起草。
+    skill_text: 技能段（core/skills.skill_block 拼好的），空 = 没装/没启用技能。
     provider ∈ DRAFT_PROVIDERS；model=None 用该来源的默认模型；base_url 只有自定义来源要传。"""
     spec = DRAFT_PROVIDERS[provider]
     user, suspects = _user_prompt(messages, relationship, keep, reply_to, style, guidance)
@@ -258,7 +267,7 @@ def draft_candidates(messages: list, relationship: str, provider: str = "deepsee
     # 1.2：DeepSeek 自己推荐的闲聊档位，0.8 出来的话太板正
     # max_tokens：三句话本来 400 够，但思考过程也算进 max_tokens，开了思考模式 400 会把答案截断
     call = lambda turns: chat(  # noqa: E731 —— 三个参数会变，其余每次都一样
-        spec.protocol, base_url or spec.base, key, model or spec.default, SYSTEM, turns,
+        spec.protocol, base_url or spec.base, key, model or spec.default, _system(skill_text), turns,
         temperature=1.2, max_tokens=4000 if thinking else 400, thinking=thinking,
         extra_body=spec.extra(thinking), headers=spec.headers, timeout=timeout)
 
@@ -282,7 +291,8 @@ def draft_candidates(messages: list, relationship: str, provider: str = "deepsee
 def draft_with_pick(messages: list, relationship: str, provider: str = "deepseek",
                     model: str | None = None, base_url: str | None = None,
                     timeout: float = 30, keep: int = 10, reply_to: str | None = None,
-                    style: str = "", thinking: bool = False) -> tuple[list[str], int, str]:
+                    style: str = "", thinking: bool = False,
+                    skill_text: str = "") -> tuple[list[str], int, str]:
     """不用 Jev 时的起草：一次调用既写 3 条候选、又挑一条推荐，附一句理由（SYSTEM_PICK）。
 
     返回 (候选, 推荐的下标, 理由)：候选最多 3 条，可能不足（跟 draft_candidates 一样按实际条数走）；
@@ -293,8 +303,8 @@ def draft_with_pick(messages: list, relationship: str, provider: str = "deepseek
     user += "\n\n按上面说的对象格式输出：replies 三条候选、best 推荐第几条（1~3）、why 一句理由。"
     key = _api_key(LLM_ENV)
     call = lambda turns: chat(  # noqa: E731
-        spec.protocol, base_url or spec.base, key, model or spec.default, SYSTEM_PICK, turns,
-        temperature=1.2, max_tokens=4000 if thinking else 400, thinking=thinking,
+        spec.protocol, base_url or spec.base, key, model or spec.default, _system(skill_text, pick=True),
+        turns, temperature=1.2, max_tokens=4000 if thinking else 400, thinking=thinking,
         extra_body=spec.extra(thinking), headers=spec.headers, timeout=timeout)
 
     content = call([user])

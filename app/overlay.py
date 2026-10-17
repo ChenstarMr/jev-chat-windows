@@ -21,7 +21,7 @@ from qfluentwidgets import (
 
 from app import chatapps, i18n, settings
 from app.version import VERSION
-from core import jev_client, llm, providers
+from core import jev_client, llm, providers, skills
 from core.questions import CHOICE_LABELS
 from app.i18n import LANGUAGES, T, bind
 
@@ -126,6 +126,11 @@ class _Fetched(QObject):
     """取模型列表的后台线程 → 主线程：哪一组（SimpleNamespace）、取回来的模型 id、失败原因（成功是空串）。
     Qt 不让跨线程碰控件，信号是跨线程唯一干净的路。"""
     done = Signal(object, list, str)
+
+
+class _SkillDone(QObject):
+    """装技能的后台线程 → 主线程：{"ok": bool, "msg": str, "data": dict|None}。"""
+    done = Signal(object)
 
 
 class _TitleBar(QWidget):
@@ -610,6 +615,35 @@ class Overlay:
             .format(providers=" / ".join(providers.THINKING))
         ))
         body.addWidget(models)
+
+        skill = _Surface()
+        box = QVBoxLayout(skill)
+        box.setContentsMargins(16, 16, 16, 18)
+        box.setSpacing(12)
+        box.addWidget(_tlabel("技能", 16, "#304c3c", True))
+        self.skillState = _label("", 12, _MUTED)
+        self.skillState.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        box.addWidget(self.skillState)
+        self.skillSwitch = SwitchButton()
+        self.skillSwitch.checkedChanged.connect(self._skill_toggled)
+        box.addWidget(self.skillSwitch)
+        self.skillEdit = LineEdit()
+        bind(self.skillEdit, "https://github.com/用户/仓库（或本地 SKILL.md 路径）", "setPlaceholderText")
+        bind(self.skillEdit, "技能来源：GitHub 仓库地址或本地 SKILL.md 路径", "setAccessibleName")
+        box.addWidget(self.skillEdit)
+        self.skillInstall = bind(PushButton(""), "安装技能")
+        self.skillInstall.clicked.connect(self._install_skill)
+        box.addWidget(self.skillInstall)
+        self.skillDelete = bind(PushButton(""), "删除技能")
+        self.skillDelete.clicked.connect(self._delete_skill)
+        box.addWidget(self.skillDelete)
+        self.skillHint = self._hint(
+            "装一个「人设/口吻包」（SKILL.md 形态，比如 github.com/hotcoffeeshake/tong-jincheng-skill），"
+            "三条候选就借它的视角和口吻写。只影响怎么说，判断和发送不碰；超长正文只装开头 4000 字。"
+        )
+        box.addWidget(self.skillHint)
+        body.addWidget(skill)
+
         self.settingsFeedback = _label("", 13, _GREEN)
         self.settingsFeedback.hide()
         body.addWidget(self.settingsFeedback)
@@ -624,6 +658,8 @@ class Overlay:
         body.addLayout(actions)
         body.addWidget(self._hint("保存后用于下一次生成的回复。"))
         body.addStretch(1)
+        self._skill_done = _SkillDone()
+        self._skill_done.done.connect(self._skill_installed)
         self._load_settings()
 
     def _hint(self, text):
@@ -870,7 +906,77 @@ class Overlay:
         self.appBox.setCurrentIndex(self._app_values.index(want) if want in self._app_values else 0)
         self._loaded_app = want
         self._sync_model_fields()  # 上面屏蔽了信号，这里补一次
+        self._load_skill_state()
         self.settingsFeedback.hide()
+
+    def _load_skill_state(self):
+        """技能卡片回显：没装 → 状态行「未安装」+ 隐藏开关和删除；装了 → 名字/描述 + 开关和删除。"""
+        data = settings.skill_installed()
+        has = bool(data)
+        self.skillSwitch.blockSignals(True)
+        self.skillSwitch.setChecked(has and settings.skill_enabled())
+        self.skillSwitch.blockSignals(False)
+        self.skillSwitch.setVisible(has)
+        self.skillDelete.setVisible(has)
+        if has:
+            desc = str(data.get("description") or "").strip()
+            bind(self.skillState, lambda: T("已安装「{name}」").format(name=data.get("name") or "技能")
+                 + (f" · {desc[:60]}" if desc else ""), "setText")
+            self.skillState.setToolTip(str(data.get("body") or ""))
+        else:
+            bind(self.skillState, "未安装", "setText")
+            self.skillState.setToolTip("")
+
+    def _skill_toggled(self, on):
+        """技能开关：立刻落盘（跟调试视图一个套路），下一次起草生效。"""
+        settings.save(skill_enabled_on=on)
+        bind(self.skillSwitch, "开" if on else "关", "setOnText")
+
+    def _install_skill(self):
+        """「安装技能」：GitHub 仓库地址或本地路径，网络/文件 IO 丢后台线程，结果走信号回来。"""
+        source = self.skillEdit.text().strip()
+        try:
+            kind, value = skills.normalize_source(source)
+        except skills.SkillError as e:
+            self._settings_feedback(str(e), error=True)
+            return
+        self.skillInstall.setEnabled(False)
+        self.skillDelete.setEnabled(False)
+        bind(self.skillState, "安装中…", "setText")
+        threading.Thread(target=lambda: self._skill_worker(kind, value), daemon=True).start()
+
+    def _skill_worker(self, kind, value):
+        """后台安装：GitHub 用 raw（main→master）拉 SKILL.md，本地直接读文件。"""
+        try:
+            data = skills.fetch_github(value) if kind == "github" else skills.fetch_local(value)
+            data["source"] = value
+        except skills.SkillError as e:
+            self._skill_done.done.emit({"ok": False, "msg": str(e), "data": None})
+            return
+        except Exception as exc:  # 线程里漏异常会静默吞掉，按钮就永远停在禁用态
+            self._skill_done.done.emit({"ok": False, "msg": f"{type(exc).__name__}: {exc}"[:160],
+                                        "data": None})
+            return
+        self._skill_done.done.emit({"ok": True, "msg": "", "data": data})
+
+    def _skill_installed(self, result):
+        """回到主线程：成功就落盘（并默认启用）+ 刷新卡片；失败把原因亮在保存反馈那行。"""
+        self.skillInstall.setEnabled(True)
+        self.skillDelete.setEnabled(True)
+        if not result.get("ok"):
+            self._load_skill_state()
+            self._settings_feedback(f"技能安装失败：{result.get('msg')}", error=True)
+            return
+        settings.save(skill_data=result["data"], skill_enabled_on=True)
+        self._load_skill_state()
+        bind(self.skillEdit, "", "setText")
+        self._settings_feedback(lambda: T("技能「{name}」已安装，下一次生成开始生效。")
+                                .format(name=result["data"].get("name")))
+
+    def _delete_skill(self):
+        settings.save(skill_data={}, skill_enabled_on=True)
+        self._load_skill_state()
+        self._settings_feedback("技能已删除，恢复默认口吻。")
 
     def _save(self):
         relationship = _RELATIONSHIPS[self.relationshipBox.currentIndex()][1]

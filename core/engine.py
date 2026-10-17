@@ -25,12 +25,14 @@ def _add_usage(total: dict, one: dict | None) -> None:
 
 def _draft_only(messages: list, relationship: str, provider: str, model: str | None,
                 base_url: str | None, timeout: float, context: int,
-                reply_to: str | None, style: str, thinking: bool) -> dict:
+                reply_to: str | None, style: str, thinking: bool,
+                skill: str | None = None) -> dict:
     """不用 Jev 的那条链：起草模型一次调用既写候选又挑一条推荐，一个 Jev 请求都不发。
     scores 全 0（界面上就不显示百分比），answers 空（判断摘要那块改显示 note）。"""
     candidates, best_index, why = draft_with_pick(
         messages, relationship, provider=provider, model=model, base_url=base_url,
-        timeout=timeout, keep=context, reply_to=reply_to, style=style, thinking=thinking)
+        timeout=timeout, keep=context, reply_to=reply_to, style=style, thinking=thinking,
+        skill_text=skill or "")
     if not candidates:
         raise JevError("起草结果没有可用候选回复")
     best_index = best_index if 0 <= best_index < len(candidates) else 0
@@ -51,7 +53,7 @@ def analyze(messages: list, relationship: str, model: str | None = None,
             base_url: str | None = None, reply_to: str | None = None, style: str = "",
             thinking: bool = False, jev_provider: str = "openrouter",
             jev_model: str | None = None, jev_base_url: str | None = None,
-            use_jev: bool = True) -> dict:
+            use_jev: bool = True, skill: str | None = None) -> dict:
     """messages: [(from, text)] from ∈ {her, me}，最新一条在最后；
     群聊里可以带第三项 name（说这句话的人），单聊不带。
     context: 起草和判断各看最近多少条消息（用户设置里的「参考上下文」）。
@@ -60,6 +62,8 @@ def analyze(messages: list, relationship: str, model: str | None = None,
     jev_base_url: 判断来源选「自定义」时要填的 SystemOne 地址。
     use_jev: 要不要用 Jev 判断（设置里的开关）。False = 整条链不碰 Jev，起草模型自己写候选、
     自己挑一条推荐（answers 空、scores 全 0，界面读 note 显示一句说明）。
+    skill: 技能段（settings.skill_text()，core/skills 拼好的人设/口吻包），只影响起草的
+    口吻与视角；None/空 = 没装或没启用。
     reply_to: 群聊里指定回复给谁；None = 正常回复。
     style: 用户自己描述的说话风格，只影响起草。
     thinking: 起草时是否开思考模式，只影响起草，默认关。
@@ -77,7 +81,7 @@ def analyze(messages: list, relationship: str, model: str | None = None,
     """
     if not use_jev:
         return _draft_only(messages, relationship, provider, model, base_url, timeout,
-                           context, reply_to, style, thinking)
+                           context, reply_to, style, thinking, skill)
     state = build_state(messages, relationship, keep=context, reply_to=reply_to)
     usage: dict = {}
     answers: dict = {}
@@ -95,7 +99,8 @@ def analyze(messages: list, relationship: str, model: str | None = None,
     candidates = draft_candidates(messages, relationship, provider=provider, model=model,
                                   base_url=base_url, timeout=timeout, keep=context,
                                   reply_to=reply_to, style=style, thinking=thinking,
-                                  guidance=guidance_text(answers) if judged else None)
+                                  guidance=guidance_text(answers) if judged else None,
+                                  skill_text=skill or "")
     if not candidates:  # 注入过滤可以把起草结果全扔掉；接着取 [0] 会 IndexError
         raise JevError("起草结果没有可用候选回复")
 
