@@ -13,6 +13,7 @@ import os
 import sys  # 只为下面这一处：打包后 __file__ 指向临时解包目录，config.json 得放在 exe 旁边才存得住
 
 from app import chatapps
+from core import skills
 from core.providers import (CUSTOM, DRAFT_PROVIDERS, JEV_CUSTOM, JEV_ENV, JEV_PROVIDERS,
                             LEGACY, LLM_ENV)
 

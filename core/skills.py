@@ -234,15 +234,19 @@ def _read_local(p: Path) -> str:
 
 
 def install(text: str) -> list[dict]:
-    """设置页「安装」入口：一行来源 → 归一化 → 拉取 → 技能列表（至少一条，否则抛 SkillError）。"""
+    """设置页「安装」入口：一行来源 → 归一化 → 拉取 → 技能列表（至少一条，否则抛 SkillError）。
+    每条都盖上归一化后的 source：设置页靠它认亲——重装同一来源替换旧条目、不同来源追加。
+    v0.1.32 的洞：source 恒为空串，装新技能时所有旧条目都被判成「同源」洗掉。"""
     kind, value = normalize_source(text)
     if kind == "github":
-        return [fetch_github(value)]
-    if kind == "gitee":
-        return [fetch_gitee(value)]
-    if kind == "url":
-        return [fetch_url(value)]
-    return fetch_local(value)
+        out = [fetch_github(value)]
+    elif kind == "gitee":
+        out = [fetch_gitee(value)]
+    elif kind == "url":
+        out = [fetch_url(value)]
+    else:
+        out = fetch_local(value)
+    return [dict(s, source=value) for s in out]
 
 
 def parse_skill(text: str, fallback_name: str = "") -> dict:
@@ -360,4 +364,10 @@ if __name__ == "__main__":
     (root / "solo.md").write_text("纯正文技能", encoding="utf-8")
     solo = fetch_local(str(root / "solo.md"))
     assert len(solo) == 1 and solo[0]["name"] == "solo"
+    # install 盖 source：重装同源替换、异源追加全靠它（v0.1.32 的洞：恒空串，装新的洗掉全部旧的）
+    fetch_github = lambda slug: {"name": "甲", "description": "d", "body": "b", "source": ""}
+    fetch_local = lambda path: [{"name": "乙", "description": "d", "body": "b", "source": ""}]
+    assert install("github.com/a/b") == [{"name": "甲", "description": "d", "body": "b", "source": "a/b"}]
+    assert install(r"E:\skills\我的技能") == [{"name": "乙", "description": "d", "body": "b",
+                                               "source": r"E:\skills\我的技能"}]
     print("skills ok")

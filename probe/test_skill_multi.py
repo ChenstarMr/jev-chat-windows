@@ -54,10 +54,15 @@ with patch("app.overlay.settings", fake):
     ov.open_settings()
     assert ov.skillBars.count() == 2, ov.skillBars.count()
 
+    # 开关只落盘、不重铺：重铺会把刚拨的开关拆了重建，滑动动画从头再播（用户实测抽搐）
+    orig_reload, reload_calls = ov._reload_skills, []
+    ov._reload_skills = lambda *a, **k: reload_calls.append(1)
     ov._skill_toggled(1, True)  # 只动第二条
     assert demo["skills"][1]["enabled"] is True and demo["skills"][0]["enabled"] is True
     ov._skill_toggled(0, False)
     assert demo["skills"][0]["enabled"] is False and demo["skills"][1]["enabled"] is True
+    assert not reload_calls, "开关不应触发列表重铺"
+    ov._reload_skills = orig_reload
 
     ov._delete_skill(0)  # 只删第一条
     assert [s["name"] for s in demo["skills"]] == ["create-partner"]
@@ -73,4 +78,23 @@ with patch("app.overlay.settings", fake):
     assert names == ["create-partner", "new-one"], names
     assert all(s.get("enabled") is True for s in demo["skills"]), demo["skills"]
     assert ov.skillBars.count() == 2
+
+    # 异源追加：装第三个不动前两个（v0.1.32 的洞：source 恒空，装新的洗掉全部旧的）
+    ov._skill_installed({"ok": True, "msg": "", "data": [
+        {"name": "create-ex", "description": "d4", "body": "b4",
+         "source": "therealXiaomanChu/ex-skill"}]})
+    assert [s["name"] for s in demo["skills"]] == ["create-partner", "new-one", "create-ex"]
+    assert ov.skillBars.count() == 3
+
+    # 老版本装的条目没盖 source：重装同款按名字认亲替换，不出双份
+    demo["skills"].append({"name": "legacy-one", "description": "d0", "body": "b0",
+                           "source": "", "enabled": False})
+    ov._reload_skills()
+    ov._skill_installed({"ok": True, "msg": "", "data": [
+        {"name": "legacy-one", "description": "d0b", "body": "b0b",
+         "source": "someone/legacy-one"}]})
+    names = [s["name"] for s in demo["skills"]]
+    assert names.count("legacy-one") == 1, names
+    assert names == ["create-partner", "new-one", "create-ex", "legacy-one"], names
+    assert ov.skillBars.count() == 4
     print("overlay multi-skill ok:", names)

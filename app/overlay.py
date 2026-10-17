@@ -951,6 +951,7 @@ class Overlay:
             item = self.skillBars.takeAt(0)
             w = item.widget()
             if w:
+                w.hide()  # 先藏再删：deleteLater 要等事件循环，不先藏会和重铺的条目叠一帧，看着在抽搐
                 w.deleteLater()
         for index, s in enumerate(settings.skills_list()):
             bar = _Surface(accent=True)
@@ -988,11 +989,12 @@ class Overlay:
         self._reload_skills()
 
     def _skill_toggled(self, index, on):
-        """单条技能的启动开关：改列表里那一条的 enabled，立刻落盘，下一次起草生效。"""
+        """单条技能的启动开关：改列表里那一条的 enabled，立刻落盘，下一次起草生效。
+        只落盘、不重铺——重铺会把刚拨动的开关拆了重建，滑动动画从头再播，看着在抽搐。"""
         items = settings.skills_list()
         if 0 <= index < len(items):
             items[index]["enabled"] = bool(on)
-            self._set_skills(items)
+            settings.save(skills_data=items)
 
     def _install_skill(self):
         """「安装技能」：GitHub/Gitee/.md 直链/本地路径，网络/文件 IO 丢后台线程，结果走信号回来。"""
@@ -1028,9 +1030,15 @@ class Overlay:
             self._settings_feedback(f"技能安装失败：{result.get('msg')}", error=True)
             return
         items = settings.skills_list()
-        sources = {str(s.get("source") or "") for s in result["data"]}
-        kept = [s for s in items if str(s.get("source") or "") not in sources]
-        self._set_skills(kept + [dict(s, enabled=True) for s in result["data"]])
+        new = [dict(s, enabled=True) for s in result["data"]]
+        sources = {str(s.get("source") or "") for s in new if s.get("source")}
+        names = {str(s.get("name") or "") for s in new}
+        # 同 source 的旧条目替换，不同来源的照常追加（装多少条都留着，互不顶掉）；
+        # 老版本装的条目没盖 source，按名字认亲，免得重装同款出双份
+        kept = [s for s in items
+                if str(s.get("source") or "") not in sources
+                and (str(s.get("source") or "") or str(s.get("name") or "")) not in names]
+        self._set_skills(kept + new)
         self.skillEdit.clear()
         names = "、".join(str(s.get("name") or "技能") for s in result["data"])
         self._settings_feedback(lambda: T("技能「{name}」已安装，下一次生成开始生效。").format(name=names))

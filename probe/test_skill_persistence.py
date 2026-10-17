@@ -47,6 +47,11 @@ assert s.skill_text() == "", "全停用后技能段应为空"
 # 磁盘上的 JSON 真的带着列表
 assert len(json.loads(Path(s._CONFIG).read_text(encoding="utf-8"))["skills"]) == 2
 
+# 启用一条：skill_text 必须拼出正文（NameError 回归——v0.1.32 漏 import，装了技能一生成必炸）
+s.save(skills_data=[dict(A, enabled=True)])
+text = s.skill_text()
+assert A["body"] in text and A["name"] in text, text[:120]
+
 # 清空：列表落成 []
 s.save(skills_data=[])
 assert s.skills_list() == [] and json.loads(Path(s._CONFIG).read_text(encoding="utf-8"))["skills"] == []
