@@ -36,11 +36,12 @@
 
 设置页的「模型」卡片分两节，各填一把 key：
 
-1. **判断 · Jev** —— 判断意图、紧张度，并给三条候选排序。四家给的是同一个 Jev，选一个来源填它的
-   key：**OpenRouter**（默认，key 在 [openrouter.ai](https://openrouter.ai/) 申请）、
-   **OpenCode Zen**（key 在 [opencode.ai/zen](https://opencode.ai/zen) 申请）、**TypeSafe 直连**
-   （key 在 [console.typesafe.ai](https://console.typesafe.ai/) 申请），或**自定义**（自己填一个
-   TypeSafe 兼容地址 + 那把 key）。填的是哪家的 key 看你上面选了哪家。
+1. **判断 · Jev** —— 判断意图、紧张度，并给三条候选排序。选一个来源填它的 key：
+   **OpenRouter**（默认，key 在 [openrouter.ai](https://openrouter.ai/) 申请）、
+   **基元律动**（国内直连，key 在 [tokenrhythm.studio](https://tokenrhythm.studio) 用户中心申请，
+   模型固定 `NeoHorse-Jev-4B`）、**OpenCode Zen**（key 在 [opencode.ai/zen](https://opencode.ai/zen) 申请）、
+   **TypeSafe 直连**（key 在 [console.typesafe.ai](https://console.typesafe.ai/) 申请），或**自定义**
+   （自己填一个 SystemOne 兼容地址 + 那把 key）。填的是哪家的 key 看你上面选了哪家。
    这一节顶上有个**「用 Jev 判断」开关**：Jev 连不上、或你只想让语言模型自己写，就拨到关——
    整条链不再调 Jev（判断、排序都不调），起草模型自己写三条候选、自己挑一条推荐，
    判断摘要那块改显示它给的一句理由。关掉后这一节的来源/密钥/模型会收起来，判断那把 key 也不用填。
@@ -52,15 +53,10 @@
 两把 key 各管一节，互不相干；同一节里换来源要重填一次 key（只存这一把）。
 关掉「用 Jev 判断」后就只剩起草那把 key 要填。
 
-**为什么起草默认 DeepSeek 官网直连**
+**来源怎么选**
 
-起草是两次网络调用里重的那次。OpenRouter 在国外，从国内过去要等好几秒、还时不时抽风；
-DeepSeek 官方 API（`api.deepseek.com`）国内直连，起草基本就是一次 HTTP 请求的时间，体感差好几倍。
-所以起草默认就是它，不用改。
-
-判断那一步比起草轻得多，慢一点无所谓，默认走 OpenRouter 即可；嫌慢就把它也换成 TypeSafe 直连，
-或者 OpenCode Zen（同一个 Jev，Zen 那边还有一档限时免费的 `jev-1.13-free`，手打进模型框即可）。
-两把 key 都只进注册表，不落文件。
+起草默认 DeepSeek 官网直连（国内直连，快）；判断默认 OpenRouter，国内用着慢就换**基元律动**或
+OpenCode Zen。换来源在设置页选一下、重填那把 key 即可，两把 key 都只进注册表，不落文件。
 
 **日常怎么用**
 
@@ -122,7 +118,7 @@ RapidOCR 自带的只有中英文模型，韩文整段都是乱码：同一个 K
 - **调试视图**（可选）：另开一个窗口，实时画出截到的画面和每个识别框——绿 = 我、蓝 = 对方、
   灰 = 过滤掉的灰字、橙 = 当成发言人名、红 = 当成图片丢掉、黄 = 小字丢掉，外加消息区和头部的框、
   OCR 耗时、这一帧读出来的每一行。识别不对时一眼看出是哪一步的锅。只在内存里画，不存图。
-- **两个模型都能换**：判断走 OpenRouter / OpenCode Zen / TypeSafe 直连 / 自定义；起草有 12 家预设
+- **两个模型都能换**：判断走 OpenRouter / 基元律动 / OpenCode Zen / TypeSafe 直连 / 自定义；起草有 12 家预设
   （默认 DeepSeek 官网），OpenAI / Anthropic / Gemini 三种协议都支持，也能填自己的 Base URL。
   全程只要两把 key（关掉 Jev 判断就只要起草那一把）。
 - **思考模式开关**：默认关；开了模型先想再写，更斟酌但慢好几倍、贵一些。
@@ -156,7 +152,7 @@ RapidOCR 自带的只有中英文模型，韩文整段都是乱码：同一个 K
   不夹带任何聊天内容；设置里「启动时检查更新」关掉就完全不发这个请求，源码直接跑（没有版本号）也
   不会发。
 
-什么会出网：判断（`JEV_API_KEY`）去你选的 OpenRouter、OpenCode Zen、TypeSafe 直连或自定义地址
+什么会出网：判断（`JEV_API_KEY`）去你选的 OpenRouter、基元律动、OpenCode Zen、TypeSafe 直连或自定义地址
 （关掉「用 Jev 判断」就完全不发这个请求，那把 key 也不用填）；
 起草（`LLM_API_KEY`）发给你
 在设置里选的那家接口（DeepSeek 官网、OpenRouter、OpenAI、Moonshot、智谱、通义、硅基流动、
@@ -194,15 +190,17 @@ WGC 截聊天窗口（GPU 合成窗口也能截，被遮挡也能截）
 | 来源 | 地址 | 默认模型 |
 | --- | --- | --- |
 | OpenRouter（默认） | `openrouter.ai/api/alpha/decisions` | `typesafe/jev-1.13` |
+| 基元律动（国内） | `tokenrhythm.studio/v1/systemone` | `NeoHorse-Jev-4B`（模型 id 固定） |
 | OpenCode Zen | `opencode.ai/zen/v1/systemone` | `jev-1.13`（`jev-1.13-free` 限时免费） |
 | TypeSafe 直连 | `api.typesafe.ai`（官方 `typesafe-sdk`） | `jev-latest` |
-| 自定义 | 自己填的 TypeSafe 兼容地址 | `jev-latest` |
+| 自定义 | 自己填的 SystemOne 兼容地址 | `jev-latest` |
 
-四家说的是同一套 SystemOne 协议（`POST {model, state, questions}` → `{answers, usage}`），换来源就是
-换地址、key 和模型 id，判断口径完全一样。「自定义」只填到域名就行（比如 `https://api.typesafe.ai`），
-程序自己补 `/v1/systemone`；直接把完整端点粘进去也认。OpenCode Zen 的网关会 403 掉 Python 默认 UA，
-所以那条路按来源表带了 `curl` 的 UA——自己改代码时别把这行删了。
-没有默认模型的来源（或想换 Zen 的免费档），在设置页直接手打模型 id 即可。
+五家走的是同一套 SystemOne 协议（`POST {model, state, questions}` → `{answers, usage}`），换来源就是
+换地址、key 和模型 id。基元律动那格不是 Jev 官方模型，而是同协议、同题目口径的国产判断模型
+NeoHorse-Jev-4B（要在它用户中心创建 API key，账号灰度开通 JEV 权限）。「自定义」只填到域名就行
+（比如 `https://api.typesafe.ai`），程序自己补 `/v1/systemone`；直接把完整端点粘进去也认。
+OpenCode Zen 的网关会 403 掉 Python 默认 UA，所以那条路按来源表带了 `curl` 的 UA——自己改代码时
+别把这行删了。没有默认模型的来源（或想换 Zen 的免费档），在设置页直接手打模型 id 即可。
 
 **起草 3 条候选（key：`LLM_API_KEY`）**
 
@@ -262,9 +260,9 @@ MiniMax、Qwen 走 `/messages`，Grok、GPT 走 `/responses`，选了会失败�
 - **Windows 10 1903+ 或 Windows 11**（Windows Graphics Capture 的最低要求）
 - **Python 3.10–3.12**（Releases 里的 exe 是 CI 用 3.11 打的；只想用 exe 的话不用装 Python。3.13+ 不行：rapidocr-onnxruntime 1.4.x 官方包 requires_python 封顶 <3.13，pip 会静默改装 1.2.3，启动即 KeyError）
 - **聊天窗口**
-- **两把 API key**：判断用 `JEV_API_KEY`，默认来源 [OpenRouter](https://openrouter.ai/)（或
-  [TypeSafe 直连](https://console.typesafe.ai/)）；起草用 `LLM_API_KEY`，默认
-  [DeepSeek 官网](https://platform.deepseek.com/)。详见下面「使用说明」
+- **两把 API key**：判断用 `JEV_API_KEY`（来源任选：OpenRouter（默认）/ 基元律动 / OpenCode Zen /
+  TypeSafe 直连 / 自定义）；起草用 `LLM_API_KEY`，默认 [DeepSeek 官网](https://platform.deepseek.com/)。
+  详见下面「使用说明」
 
 > Win10 上 WGC 会在目标窗口外画一圈黄框，系统不给关；Win11 才能关掉。
 > 嫌碍眼就把标题栏的采集开关拨到「已暂停」，黄框立刻消失。
@@ -316,7 +314,7 @@ pyinstaller --noconfirm --clean jev.spec
 | 调试视图 | 另开一个窗口实时显示截到的画面和识别框，看识别在哪一步认错。拨一下立刻生效，不用点保存；关掉那个窗口等于关掉开关 | `config.json` → `debug_view`（默认关） |
 | 聊天应用 | 同时开着微信和 KakaoTalk 时指定盯哪个；自动 = 按顺序认第一个（微信优先）。保存立即生效，正在采集就换到新窗口 | `config.json` → `app`（默认 `auto`） |
 | 用 Jev 判断 | 关掉整条链不碰 Jev：不判断意图/紧张度、不排序，起草模型自己写三条候选、自己挑一条推荐，判断摘要那块改显示它给的一句理由。拨一下立刻生效，不用点保存；关掉后下面那几行收起来，判断那把 key 也不用填 | `config.json` → `use_jev`（默认开） |
-| 判断 · 来源 | OpenRouter / OpenCode Zen / TypeSafe 直连 / 自定义 | `config.json` → `jev_provider`（默认 `openrouter`） |
+| 判断 · 来源 | OpenRouter / 基元律动 / OpenCode Zen / TypeSafe 直连 / 自定义 | `config.json` → `jev_provider`（默认 `openrouter`） |
 | 判断 · Base URL | 只有「自定义」来源才出现这一行 | `config.json` → `jev_base_url` |
 | 判断 · 密钥 | 上面选哪家就填哪家的 key。已配置时留空 = 保留；关掉「用 Jev 判断」就不用填 | 注册表 `HKCU\Environment` → `JEV_API_KEY` |
 | 判断 · 模型 | 可手打，也可点「获取模型」拉列表挑 | `config.json` → `jev_model`（空 = 该来源默认） |
@@ -370,7 +368,7 @@ core/                   Jev 判断内核，平台无关，跟安卓原版同一�
   engine.py             唯一入口 analyze(messages, relationship) → 候选 + 排序 + 判断
   providers.py          两张来源表（判断 / 起草）：协议、地址、默认模型；纯数据，不认 key
   llm.py                三种协议的薄适配层，一律走官方 SDK：openai / anthropic / google-genai
-  jev_client.py         Jev 判断客户端：OpenRouter / OpenCode Zen / 自定义（手写 urllib）/ TypeSafe 直连（typesafe-sdk）；脱敏、退避
+  jev_client.py         Jev 判断客户端：OpenRouter / 基元律动 / OpenCode Zen / 自定义（手写 urllib）/ TypeSafe 直连（typesafe-sdk）；脱敏、退避
   questions.py          7 道判断题 + build_state() + build_rank_question() + 判断小抄 guidance_text() / 中文标签 CHOICE_LABELS
   draft.py              起草 3 条候选：拼提示词、解析、过滤、不足时追问补齐；调用走 llm.py
 tools/

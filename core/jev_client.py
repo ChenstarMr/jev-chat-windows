@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""Jev 判断 API 客户端：OpenRouter、OpenCode Zen、自定义、TypeSafe 直连。
+"""Jev 判断 API 客户端：OpenRouter、基元律动、OpenCode Zen、自定义、TypeSafe 直连。
 
-四条路分两种：OpenRouter / OpenCode Zen / 自定义都是同一套 SystemOne 形状的 HTTP
+五条路分两种：OpenRouter / 基元律动 / OpenCode Zen / 自定义都是同一套 SystemOne 形状的 HTTP
 （POST {model, state, questions} → {answers, usage}），只是地址、key、模型 id 和固定头不同，
 由 core/providers.JEV_PROVIDERS 描述，这里手写 urllib 发；TypeSafe 直连走官方 `typesafe_sdk`
 （它把路径写死成 /v1/systemone，所以只有它用 SDK）。
@@ -21,10 +21,12 @@ from typing import NoReturn
 
 try:  # 当模块导入 / 当脚本直接跑 都能用
     from .providers import (ENV_VARS, JEV_ENV, JEV_PROVIDERS, LEGACY, OPENCODE_JEV_MODELS,
-                            OPENROUTER_DECISIONS, OPENROUTER_KEY_URL, TYPESAFE_BASE)
+                            OPENROUTER_DECISIONS, OPENROUTER_KEY_URL, TOKENRHYTHM_JEV_MODELS,
+                            TYPESAFE_BASE)
 except ImportError:
     from providers import (ENV_VARS, JEV_ENV, JEV_PROVIDERS, LEGACY, OPENCODE_JEV_MODELS,
-                           OPENROUTER_DECISIONS, OPENROUTER_KEY_URL, TYPESAFE_BASE)
+                           OPENROUTER_DECISIONS, OPENROUTER_KEY_URL, TOKENRHYTHM_JEV_MODELS,
+                           TYPESAFE_BASE)
 
 MAX_RETRIES = 3
 
@@ -129,14 +131,14 @@ def ask(state: dict, questions: dict, timeout: float = 20,
         base_url: str | None = None, retries: int = MAX_RETRIES) -> dict:
     """问 Jev 一轮判断，返回 {"answers": {名字: 答案}, "usage": {...}}。
 
-    provider ∈ JEV_PROVIDERS（openrouter / opencode / typesafe / custom）；
+    provider ∈ JEV_PROVIDERS（openrouter / tokenrhythm / opencode / typesafe / custom）；
     model=None 用该来源的默认模型；base_url 只有自定义来源要传。
-    四条路返回的 dict 形状一模一样，429/529 都会退避重试。绝不打印或写出 key。
+    五条路返回的 dict 形状一模一样，429/529 都会退避重试。绝不打印或写出 key。
     retries：重试上限。判断链两处都有兜底（退回盲起草 / 按第一条推荐），engine 传 1——
     弱网下别让人在「正在整理」上干等满四轮退避，速降级到不用 Jev 的老路。
     """
     spec = JEV_PROVIDERS.get(provider) or JEV_PROVIDERS["openrouter"]
-    key = _api_key(JEV_ENV)  # 四家共用同一把 key，换来源不用重填
+    key = _api_key(JEV_ENV)  # 各家共用同一把 key，换来源不用重填
     model = model or spec.default
     if spec.kind == "sdk":
         return _ask_typesafe(state, questions, key, model, timeout)
@@ -314,9 +316,11 @@ def list_models(provider: str, key: str, timeout: float = 10,
         # key 对不对由探测兜着，别让坏密钥等到第一次判断才暴露。
         _check_openrouter_key(key, timeout)
         return ["~typesafe/jev-latest", "typesafe/jev-1.13"]
-    # OpenCode Zen：目录里是整本模型，只留 Jev；目录不列 Jev 就用文档里那两个 id 兜底
+    # OpenCode Zen / 基元律动：目录里可能混着别的模型，只留 Jev；目录一个都不列时
+    # 用各自文档里写死的 id 兜底（Zen 是 jev-1.13 两档，基元律动固定 NeoHorse-Jev-4B）
+    fallback = OPENCODE_JEV_MODELS if provider == "opencode" else TOKENRHYTHM_JEV_MODELS
     return _catalog_models(spec.url, key, timeout, spec.headers, only_jev=True,
-                           fallback=OPENCODE_JEV_MODELS)
+                           fallback=fallback)
 
 
 if __name__ == "__main__":
@@ -329,10 +333,10 @@ if __name__ == "__main__":
     import typesafe_sdk
 
     try:
-        from .providers import OPENCODE_JEV_MODELS, OPENCODE_SYSTEMONE
+        from .providers import OPENCODE_JEV_MODELS, OPENCODE_SYSTEMONE, TOKENRHYTHM_SYSTEMONE
         from .questions import JUDGE_QUESTIONS, build_rank_question
     except ImportError:
-        from providers import OPENCODE_JEV_MODELS, OPENCODE_SYSTEMONE
+        from providers import OPENCODE_JEV_MODELS, OPENCODE_SYSTEMONE, TOKENRHYTHM_SYSTEMONE
         from questions import JUDGE_QUESTIONS, build_rank_question
 
     os.environ.pop(JEV_ENV, None)
@@ -556,12 +560,20 @@ if __name__ == "__main__":
     with patch.object(urllib.request, "urlopen", _catalog({"data": [{"id": "b"}, {"id": "a"}]})):
         assert list_models("custom", "k", base_url="https://my-gw.example") == ["a", "b"]
     assert seen["cat_url"] == "https://my-gw.example/v1/models"
+    # 基元律动：同一个目录问法，只留 Jev；一个都不列时用文档里写死的 NeoHorse-Jev-4B 兜底
+    with patch.object(urllib.request, "urlopen",
+                      _catalog({"data": [{"id": "deepseek-v4-flash"}, {"id": "NeoHorse-Jev-4B"}]})):
+        assert list_models("tokenrhythm", "tr-key") == ["NeoHorse-Jev-4B"]
+    assert seen["cat_url"] == TOKENRHYTHM_SYSTEMONE.replace("/systemone", "/models")
+    with patch.object(urllib.request, "urlopen", _catalog({"data": [{"id": "deepseek-v4-flash"}]})):
+        assert list_models("tokenrhythm", "tr-key") == list(TOKENRHYTHM_JEV_MODELS)
 
     def _catalog_404(req, timeout=None):
         raise urllib.error.HTTPError("https://x/models", 404, "Not Found", {}, io.BytesIO(b"{}"))
 
     # 目录连不上就如实报错（坏 key 得当场暴露，别静默兜底），自定义再提示可以手打模型 id
     for provider, base, wanted in (("opencode", None, "404"),
+                                   ("tokenrhythm", None, "404"),
                                    ("custom", "https://my-gw.example", "手打模型 id")):
         with patch.object(urllib.request, "urlopen", _catalog_404):
             try:

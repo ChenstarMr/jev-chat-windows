@@ -13,8 +13,8 @@ import uuid
 from collections import namedtuple
 
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"  # OpenAI 兼容；auth/key 探测也挂在它下面
-# Jev 判断里 TypeSafe 直连之外的三家都自己拼 HTTP：typesafe_sdk 把路径写死成 /v1/systemone，
-# 打不到 OpenRouter 这个地址（Zen 和自定义虽然也是 /v1/systemone，但地址和头各不相同）
+# Jev 判断里 TypeSafe 直连之外的四家都自己拼 HTTP：typesafe_sdk 把路径写死成 /v1/systemone，
+# 打不到 OpenRouter 这个地址（基元律动 / Zen / 自定义也是 /v1/systemone 形状，但地址和头各不相同）
 OPENROUTER_DECISIONS = "https://openrouter.ai/api/alpha/decisions"
 # 免费的密钥探测端点：Jev 模型不在 /models 目录里（列表写死），key 对不对靠它验
 OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/auth/key"
@@ -24,8 +24,12 @@ TYPESAFE_BASE = "https://api.typesafe.ai"
 # jev-1.13-free 是限时免费的同款，想省钱把模型框里的 id 换成它就行。
 OPENCODE_SYSTEMONE = "https://opencode.ai/zen/v1/systemone"
 OPENCODE_JEV_MODELS = ("jev-1.13", "jev-1.13-free")
+# 基元律动（tokenrhythm.studio）的 JEV 决策接口：同一套 SystemOne 形状，模型 id 固定
+# NeoHorse-Jev-4B（/v1/decision 和 /v1/systemone 同一套请求体，这里走后者；账号要灰度开通）。
+TOKENRHYTHM_SYSTEMONE = "https://tokenrhythm.studio/v1/systemone"
+TOKENRHYTHM_JEV_MODELS = ("NeoHorse-Jev-4B",)
 # Zen 网关的 WAF 会把 Python urllib 的默认 UA 直接 403（不是鉴权失败，是 UA 被拦），所以手写
-# HTTP 的那条路必须带一个浏览器/curl 的 UA。OpenRouter 不吃这一套，不用带。
+# HTTP 的那条路必须带一个浏览器/curl 的 UA。OpenRouter 和基元律动不吃这一套，不用带。
 CURL_UA = {"User-Agent": "curl/8.9.1"}
 
 JEV_ENV = "JEV_API_KEY"    # 判断那把，不管选哪家
@@ -38,6 +42,7 @@ LEGACY = {JEV_ENV: "OPENROUTER_API_KEY", LLM_ENV: "DEEPSEEK_API_KEY"}
 _Jev = namedtuple("_Jev", "name default url kind headers", defaults=(None, "http", None))
 JEV_PROVIDERS = {
     "openrouter": _Jev("OpenRouter", "typesafe/jev-1.13", OPENROUTER_DECISIONS),
+    "tokenrhythm": _Jev("基元律动 NeoHorse", "NeoHorse-Jev-4B", TOKENRHYTHM_SYSTEMONE),
     "opencode": _Jev("OpenCode Zen", "jev-1.13", OPENCODE_SYSTEMONE, "http", CURL_UA),
     "typesafe": _Jev("TypeSafe 直连", "jev-latest", None, "sdk"),
     "custom": _Jev("自定义 · SystemOne 兼容", "jev-latest"),
@@ -119,5 +124,9 @@ if __name__ == "__main__":
     assert JEV_PROVIDERS["typesafe"].kind == "sdk" and JEV_PROVIDERS["typesafe"].headers is None
     assert JEV_PROVIDERS["openrouter"].kind == "http" and JEV_PROVIDERS["openrouter"].headers is None
     assert JEV_PROVIDERS["custom"].url is None and JEV_PROVIDERS["custom"].kind == "http"
+    assert JEV_PROVIDERS["tokenrhythm"].url == TOKENRHYTHM_SYSTEMONE
+    assert (JEV_PROVIDERS["tokenrhythm"].default, JEV_PROVIDERS["tokenrhythm"].kind,
+            JEV_PROVIDERS["tokenrhythm"].headers) == ("NeoHorse-Jev-4B", "http", None)
+    assert TOKENRHYTHM_JEV_MODELS == ("NeoHorse-Jev-4B",)
     assert JEV_CUSTOM == ("custom",) and set(JEV_CUSTOM) <= set(JEV_PROVIDERS)
     print("providers ok")

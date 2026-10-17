@@ -589,13 +589,13 @@ class Overlay:
         self.jev = self._model_group(box, "判断 · Jev", "jev", providers.JEV_PROVIDERS,
                                      enable_switch=True)
         self.jev.hint = self._hint(
-            "判断意图、紧张度，并给三条候选排序。四家给的是同一个 Jev，开着就必须填。"
+            "判断意图、紧张度，并给三条候选排序。开着就必须填判断那把密钥。"
         )
         box.addWidget(self.jev.hint)
         self.draft = self._model_group(box, "起草 · 语言模型", "draft", providers.DRAFT_PROVIDERS)
         box.addWidget(self._hint(
             "写那三条候选；关掉 Jev 时还由它挑一条推荐。"
-            "OpenAI / Anthropic / Gemini 三种接口都走各自官方 SDK。默认 DeepSeek 官网直连，国内最快。"
+            "OpenAI / Anthropic / Gemini 三种接口都走各自官方 SDK。默认 DeepSeek 官网直连。"
         ))
         think_row = QHBoxLayout()
         think_row.addWidget(_tlabel("起草时开启思考模式", 13), 1)
