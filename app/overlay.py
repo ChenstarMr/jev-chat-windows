@@ -122,6 +122,38 @@ class _Surface(CardWidget):
         return self._normalBackgroundColor()
 
 
+class _ElideLabel(BodyLabel):
+    """单行省略标签：放不下就在尾部打省略号，最小宽度趋近 0。
+    QLabel 不换行时最小宽度 = 整句文本宽度，长描述会把同行其他控件挤出窗口
+    （技能条的启动/删除就是这么被顶没的）——这里永远给布局一个能塞下的小尺寸。"""
+
+    def __init__(self, text="", size=13, color=None, bold=False, parent=None):
+        super().__init__(parent)
+        self.setTextFormat(Qt.PlainText)
+        self.setWordWrap(False)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        setFont(self, size, QFont.DemiBold if bold else QFont.Normal)
+        if color:
+            qss = f"BodyLabel {{ color: {color}; background: transparent; }}"
+            setCustomStyleSheet(self, qss, qss)
+        self._full = ""
+        self.setFull(text)
+
+    def setFull(self, text):
+        """完整文本存起来，显示的永远是按当前宽度省略后的版本；全文走 tooltip。"""
+        self._full = str(text or "")
+        self._relayout()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._relayout()
+
+    def _relayout(self):
+        width = max(24, self.width() - 2)
+        BodyLabel.setText(self, self.fontMetrics().elidedText(self._full, Qt.ElideRight, width))
+
+
 class _Fetched(QObject):
     """取模型列表的后台线程 → 主线程：哪一组（SimpleNamespace）、取回来的模型 id、失败原因（成功是空串）。
     Qt 不让跨线程碰控件，信号是跨线程唯一干净的路。"""
@@ -628,10 +660,8 @@ class Overlay:
         bar.setSpacing(10)
         bar_text = QVBoxLayout()
         bar_text.setSpacing(0)
-        self.skillName = _label("", 13, "#233c2f", True)
-        self.skillName.setWordWrap(False)
-        self.skillDesc = _label("", 11, _MUTED)
-        self.skillDesc.setWordWrap(False)
+        self.skillName = _ElideLabel(size=13, color="#233c2f", bold=True)
+        self.skillDesc = _ElideLabel(size=11, color=_MUTED)
         bar_text.addWidget(self.skillName)
         bar_text.addWidget(self.skillDesc)
         bar.addLayout(bar_text, 1)
@@ -942,9 +972,9 @@ class Overlay:
         if has:
             name = str(data.get("name") or "技能")
             desc = str(data.get("description") or "").strip()
-            self.skillName.setText(name)
+            self.skillName.setFull(name)
             self.skillName.setToolTip(name)
-            self.skillDesc.setText(desc)
+            self.skillDesc.setFull(desc)
             self.skillDesc.setToolTip(str(data.get("body") or ""))
 
     def _skill_toggled(self, on):

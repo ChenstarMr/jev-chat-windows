@@ -129,7 +129,9 @@ def main() -> int:
                      "app": "auto", "lang": "zh",
                      # 演示里装一个技能，让设置页的技能卡片有东西可看
                      "skill": {} if args.state == "setup" else
-                     {"name": "童锦程视角", "description": "深情祖师爷的思维框架（演示）",
+                     {"name": "tong-jincheng-perspective",
+                      "description": "童锦程视角：以「深情祖师爷」、「情感内容创作者」的思维框架来看待人际关系、"
+                                     "社交与表达，用合成聊天预览 Qt 界面时也保持同一口吻（演示用长描述）",
                       "body": "技能演示：三条候选都带一股直给的深情劲儿。",
                       "source": "github.com/hotcoffeeshake/tong-jincheng-skill"},
                      "skill_enabled": True}
