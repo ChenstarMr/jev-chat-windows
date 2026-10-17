@@ -17,7 +17,7 @@ from collections import deque
 
 from app import chatapps, settings, update, worker
 from app.capture import find_chat_hwnd
-from app.fill import fill
+from app.fill import click_point, fill
 from app.ocr import similar  # 核对那帧 OCR 会抖，会话名按相似度放行（采集侧同一条规则）
 from app.overlay import Overlay
 from app.version import VERSION
@@ -53,7 +53,18 @@ def target_of(title):
 def _fill_now(text):
     """真正去点输入框粘贴：核对通过的、和没法核对（暂停中）的都从这儿走。
     成功/失败的状态也从这儿出——核对是异步的，「已填入」不能在发起时就说。"""
+    if state["hwnd"] is None or state["area"] is None:
+        ov.set_status("未能填入：聊天窗口或输入区不可用，请再点一次填入。", "error")
+        return
+    shielded = False
     try:
+        cx, cy = click_point(state["hwnd"], state["area"])
+        # 悬浮窗自己置顶，盖住输入框时那一击会点在它自己身上、什么都粘不进去：
+        # 填入前让它让一下路（几十毫秒），填完原样回来。
+        shielded = ov.covers_point(cx, cy)
+        if shielded:
+            ov.win.hide()
+            time.sleep(0.05)
         fill(state["hwnd"], state["area"], text)
     except Exception as e:
         import traceback
@@ -61,7 +72,10 @@ def _fill_now(text):
         ov.log(f"[填入失败] {type(e).__name__}: {e}")
         ov.log(f"[填入失败堆栈] {' '.join(traceback.format_exc().split())[:300]}")
         return
-    ov.set_status("已尝试填入，请确认内容后发送。", "success")
+    finally:
+        if shielded:
+            ov.win.show()
+    ov.set_status("已填入输入框，请确认内容后发送。", "success")
 
 
 def fill_reply(text):

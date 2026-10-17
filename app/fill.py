@@ -17,6 +17,10 @@ k32.GlobalUnlock.argtypes = [ctypes.c_void_p]
 k32.GlobalFree.argtypes = [ctypes.c_void_p]
 u32.SetClipboardData.restype = ctypes.c_void_p
 u32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+u32.WindowFromPoint.argtypes = [w.POINT]
+u32.WindowFromPoint.restype = ctypes.c_void_p
+u32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+u32.GetAncestor.restype = ctypes.c_void_p
 
 
 def set_clipboard(text):
@@ -46,12 +50,9 @@ def set_clipboard(text):
     raise RuntimeError("OpenClipboard 连续失败，剪贴板被其他程序占用")
 
 
-def fill(hwnd, area, text):
-    """area = 消息区 (x0, y0, x1, y1)；输入框就在底线 y1 下面。"""
-    from app.capture import unminimize
-
-    if not u32.IsWindow(hwnd):  # 微信刚重开过/采集还没接上：点下去就是往别的窗口里粘
-        raise RuntimeError("聊天窗口已经不在了（可能刚重开过），请再点一次填入")
+def click_point(hwnd, area):
+    """输入框里要点的那一下（屏幕坐标）。fill 本体和悬浮窗的让路检查共用这一份推导，
+    两处算出来的点永远一致。"""
     r = w.RECT()
     if ctypes.windll.dwmapi.DwmGetWindowAttribute(hwnd, 9, ctypes.byref(r), ctypes.sizeof(r)) != 0:  # 扩展边界，跟 WGC 帧对齐
         u32.GetWindowRect(hwnd, ctypes.byref(r))
@@ -60,8 +61,29 @@ def fill(hwnd, area, text):
     if not (r.left <= cx < r.right and r.top <= cy < r.bottom):
         # 窗口刚缩放过、坐标还是旧的：点出去可能点到联系人列表，把别的会话点开再粘进去
         raise RuntimeError("窗口位置或大小刚变过，输入框坐标还没刷新，请再点一次填入")
-    set_clipboard(text)
+    if r.bottom - (r.top + y1) < 80:
+        # 输入区被拉得太矮：再往下 40px 就不是文字区，是工具栏和「发送」——点不得
+        raise RuntimeError("输入区太矮了，把微信的输入框拉高一点再填")
+    return cx, cy
+
+
+def fill(hwnd, area, text):
+    """area = 消息区 (x0, y0, x1, y1)；输入框就在底线 y1 下面。"""
+    from app.capture import unminimize
+
+    if not u32.IsWindow(hwnd):  # 微信刚重开过/采集还没接上：点下去就是往别的窗口里粘
+        raise RuntimeError("聊天窗口已经不在了（可能刚重开过），请再点一次填入")
+    # 先还原再算坐标：最小化的窗口 GetWindowRect 给的是 (-32000,…) 的假位置，
+    # 拿它算出的点击点在还原后就指到屏幕左上角去了
     unminimize(hwnd)
+    cx, cy = click_point(hwnd, area)
+    # 点下去之前先看一眼那一击会落在谁身上：悬浮窗自己是置顶的，盖住输入框时
+    # SetForegroundWindow 抬不赢它，这一击就点在悬浮窗上、Ctrl+V 落空——
+    # 表现就是「没有报错但什么都没填进去」。挡路的是外人（截图工具、别的置顶窗）也一样拦。
+    hit = u32.WindowFromPoint(w.POINT(cx, cy))
+    if hit and u32.GetAncestor(hit, 2) != hwnd:  # GA_ROOT：输入框本体是微信的子窗口，根是微信才算数
+        raise RuntimeError("输入框被别的窗口挡住了，把它挪开再点一次填入")
+    set_clipboard(text)
 
     # SetForegroundWindow 有前台窗口保护，普通后台进程会被拒；AttachThreadInput 绕过
     fg = u32.GetForegroundWindow()

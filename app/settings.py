@@ -239,10 +239,13 @@ def save(relationship_text: str | None = None, context_n: int | None = None, *,
         "debug_view": flag(debug_view_on, debug_view),
         "app": keep(app_text, "app") or "auto",
     }
-    if skill_data is not None:  # {} = 删除；非空 dict = 安装/替换
-        data["skill"] = dict(skill_data) if skill_data else None
-    if skill_enabled_on is not None:
-        data["skill_enabled"] = bool(skill_enabled_on)
+    # skill / skill_enabled 没显式传就原样保留。save 每次都整体重写 config.json，上面的
+    # data 是从零拼的新 dict——少拼一个键，保存一次就抹掉一项：装好的技能被一次普通的
+    # 「保存设置 / 切语言 / 开关调试视图」洗掉（退出重开技能没了、装完点保存就没了，都是这个洞）。
+    skill_now = (dict(skill_data) if skill_data else None) if skill_data is not None else _read("skill")
+    if skill_now is not None:
+        data["skill"] = skill_now
+    data["skill_enabled"] = skill_enabled() if skill_enabled_on is None else bool(skill_enabled_on)
     lang = _read("lang") if lang_text is None else lang_text.strip().lower()
     if lang is not None:
         data["lang"] = lang

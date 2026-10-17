@@ -255,6 +255,8 @@ def main() -> int:
                 ov.set_status("演示模式：分析失败，请检查网络和密钥，等待下一条消息后重试。", kind="error")
             elif args.state in ("settings", "nojev"):
                 ov.open_settings()
+                if args.state == "settings":  # 滚到「技能」卡：装好的技能条是这页要看的重点
+                    QTimer.singleShot(0, lambda: ov.settingsPage.ensureWidgetVisible(ov.skillBar, 0, 0))
             elif args.state == "paused":
                 ov.set_capture(False)
 

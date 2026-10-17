@@ -6,7 +6,7 @@ from datetime import datetime
 from math import isfinite
 from types import SimpleNamespace
 
-from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QObject, QPoint, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QPushButton, QSizeGrip, QSizePolicy,
@@ -621,25 +621,46 @@ class Overlay:
         box.setContentsMargins(16, 16, 16, 18)
         box.setSpacing(12)
         box.addWidget(_tlabel("技能", 16, "#304c3c", True))
-        self.skillState = _label("", 12, _MUTED)
-        self.skillState.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        box.addWidget(self.skillState)
-        self.skillSwitch = SwitchButton()
+        # 已装的技能单独成条（技能条）：名字/描述在左，「启动」开关和「删除」在右；没装时整条隐藏。
+        self.skillBar = _Surface(accent=True)
+        bar = QHBoxLayout(self.skillBar)
+        bar.setContentsMargins(12, 8, 12, 8)
+        bar.setSpacing(10)
+        bar_text = QVBoxLayout()
+        bar_text.setSpacing(0)
+        self.skillName = _label("", 13, "#233c2f", True)
+        self.skillName.setWordWrap(False)
+        self.skillDesc = _label("", 11, _MUTED)
+        self.skillDesc.setWordWrap(False)
+        bar_text.addWidget(self.skillName)
+        bar_text.addWidget(self.skillDesc)
+        bar.addLayout(bar_text, 1)
+        self.skillSwitch = SwitchButton(self.skillBar)
+        bind(self.skillSwitch, "启动", "setOnText")
+        bind(self.skillSwitch, "停用", "setOffText")
+        bind(self.skillSwitch, "启用技能", "setToolTip")
+        bind(self.skillSwitch, "启用技能", "setAccessibleName")
         self.skillSwitch.checkedChanged.connect(self._skill_toggled)
-        box.addWidget(self.skillSwitch)
+        bar.addWidget(self.skillSwitch)
+        self.skillDelete = bind(PushButton(""), "删除技能")
+        self.skillDelete.clicked.connect(self._delete_skill)
+        bar.addWidget(self.skillDelete)
+        self.skillBar.hide()
+        box.addWidget(self.skillBar)
+        install_row = QHBoxLayout()
+        install_row.setSpacing(8)
         self.skillEdit = LineEdit()
         bind(self.skillEdit, "https://github.com/用户/仓库（或本地 SKILL.md 路径）", "setPlaceholderText")
         bind(self.skillEdit, "技能来源：GitHub 仓库地址或本地 SKILL.md 路径", "setAccessibleName")
-        box.addWidget(self.skillEdit)
+        install_row.addWidget(self.skillEdit, 1)
         self.skillInstall = bind(PushButton(""), "安装技能")
         self.skillInstall.clicked.connect(self._install_skill)
-        box.addWidget(self.skillInstall)
-        self.skillDelete = bind(PushButton(""), "删除技能")
-        self.skillDelete.clicked.connect(self._delete_skill)
-        box.addWidget(self.skillDelete)
+        install_row.addWidget(self.skillInstall)
+        box.addLayout(install_row)
         self.skillHint = self._hint(
             "装一个「人设/口吻包」（SKILL.md 形态，比如 github.com/hotcoffeeshake/tong-jincheng-skill），"
             "三条候选就借它的视角和口吻写。只影响怎么说，判断和发送不碰；超长正文只装开头 4000 字。"
+            "再装一个会替换现在的；开关即时生效，不用点保存。"
         )
         box.addWidget(self.skillHint)
         body.addWidget(skill)
@@ -910,27 +931,25 @@ class Overlay:
         self.settingsFeedback.hide()
 
     def _load_skill_state(self):
-        """技能卡片回显：没装 → 状态行「未安装」+ 隐藏开关和删除；装了 → 名字/描述 + 开关和删除。"""
+        """技能条回显：没装 → 整条隐藏；装了 → 名字/描述 + 启动开关 + 删除都在条上。
+        名字和描述是用户数据不是翻译键，直接 setText，不进 bind 注册表。"""
         data = settings.skill_installed()
         has = bool(data)
+        self.skillBar.setVisible(has)
         self.skillSwitch.blockSignals(True)
         self.skillSwitch.setChecked(has and settings.skill_enabled())
         self.skillSwitch.blockSignals(False)
-        self.skillSwitch.setVisible(has)
-        self.skillDelete.setVisible(has)
         if has:
+            name = str(data.get("name") or "技能")
             desc = str(data.get("description") or "").strip()
-            bind(self.skillState, lambda: T("已安装「{name}」").format(name=data.get("name") or "技能")
-                 + (f" · {desc[:60]}" if desc else ""), "setText")
-            self.skillState.setToolTip(str(data.get("body") or ""))
-        else:
-            bind(self.skillState, "未安装", "setText")
-            self.skillState.setToolTip("")
+            self.skillName.setText(name)
+            self.skillName.setToolTip(name)
+            self.skillDesc.setText(desc)
+            self.skillDesc.setToolTip(str(data.get("body") or ""))
 
     def _skill_toggled(self, on):
         """技能开关：立刻落盘（跟调试视图一个套路），下一次起草生效。"""
         settings.save(skill_enabled_on=on)
-        bind(self.skillSwitch, "开" if on else "关", "setOnText")
 
     def _install_skill(self):
         """「安装技能」：GitHub 仓库地址或本地路径，网络/文件 IO 丢后台线程，结果走信号回来。"""
@@ -942,7 +961,7 @@ class Overlay:
             return
         self.skillInstall.setEnabled(False)
         self.skillDelete.setEnabled(False)
-        bind(self.skillState, "安装中…", "setText")
+        bind(self.skillInstall, "安装中…")
         threading.Thread(target=lambda: self._skill_worker(kind, value), daemon=True).start()
 
     def _skill_worker(self, kind, value):
@@ -960,16 +979,17 @@ class Overlay:
         self._skill_done.done.emit({"ok": True, "msg": "", "data": data})
 
     def _skill_installed(self, result):
-        """回到主线程：成功就落盘（并默认启用）+ 刷新卡片；失败把原因亮在保存反馈那行。"""
+        """回到主线程：成功就落盘（并默认启用）+ 刷新技能条；失败把原因亮在保存反馈那行。"""
         self.skillInstall.setEnabled(True)
         self.skillDelete.setEnabled(True)
+        bind(self.skillInstall, "安装技能")
         if not result.get("ok"):
             self._load_skill_state()
             self._settings_feedback(f"技能安装失败：{result.get('msg')}", error=True)
             return
         settings.save(skill_data=result["data"], skill_enabled_on=True)
         self._load_skill_state()
-        bind(self.skillEdit, "", "setText")
+        self.skillEdit.clear()
         self._settings_feedback(lambda: T("技能「{name}」已安装，下一次生成开始生效。")
                                 .format(name=result["data"].get("name")))
 
@@ -1176,6 +1196,11 @@ class Overlay:
         self._verifying = not on
         for card in self.cards:
             card.set_available(on and self._current and not self._busy)
+
+    def covers_point(self, cx, cy):
+        """悬浮窗（置顶）有没有盖住屏幕上这一点：盖住了，填入那一击就会点在自己身上，
+        什么都粘不进微信（main._fill_now 据此让路）。"""
+        return self.win.isVisible() and self.win.frameGeometry().contains(QPoint(int(cx), int(cy)))
 
     def _empty_text(self):
         """空态卡片的默认文案，配好没配好两套说法。"""
