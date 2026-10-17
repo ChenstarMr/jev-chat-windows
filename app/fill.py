@@ -99,6 +99,19 @@ def fill(hwnd, area, text):
     u32.GetCursorPos(ctypes.byref(old))
     u32.SetCursorPos(cx, cy)
     time.sleep(0.05)
+    # 点下去之前最后一遍确认。核对到点击之间隔着零点几秒，用户可能已经切了窗口、
+    # 动了鼠标——这一击点错地方，就是「没粘进微信、反而跳到别的窗口」。
+    hit = u32.WindowFromPoint(w.POINT(cx, cy))
+    if hit and u32.GetAncestor(hit, 2) != hwnd:
+        u32.SetCursorPos(old.x, old.y)
+        raise RuntimeError("输入框被别的窗口挡住了，把它挪开再点一次填入")
+    u32.SetCursorPos(cx, cy)  # 用户这几十毫秒里动了鼠标，掰回输入框再点
+    here = w.POINT()
+    u32.GetCursorPos(ctypes.byref(here))
+    if abs(here.x - cx) > 1 or abs(here.y - cy) > 1:
+        # 光标被别的程序抢着用（剪贴板/连点工具之类），落点不可信：宁可不点
+        u32.SetCursorPos(old.x, old.y)
+        raise RuntimeError("鼠标正被别的程序占用，没敢点输入框，请再点一次填入")
     u32.mouse_event(0x2, 0, 0, 0, 0)  # 左键按下
     u32.mouse_event(0x4, 0, 0, 0, 0)  # 抬起
     time.sleep(0.05)

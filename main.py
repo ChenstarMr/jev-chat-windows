@@ -50,6 +50,30 @@ def target_of(title):
     return chat["senders"][0] if chat["senders"] else None
 
 
+def _fresh_area(hwnd):
+    """暂停采集时 state["area"] 是冻结的旧值：期间一缩放微信窗口，那组偏移就把点击指到
+    联系人列表上——替人把别的会话点开。填入前在父进程单开一次 WGC 抓帧现算：
+    慢半秒，但点哪儿永远是「现在」。"""
+    from app.capture import Capture, chat_area
+
+    cap = Capture(hwnd)
+    try:
+        full = None
+        for _ in range(20):  # 首帧通常 <300ms，最多等 2s
+            time.sleep(0.1)
+            full = cap.last_frame
+            if full is not None:
+                break
+    finally:
+        cap.stop()
+    if full is None:
+        raise RuntimeError("抓不到微信当前画面，请确认窗口可见后再填")
+    area = chat_area(full)
+    if area is None:
+        raise RuntimeError("消息区认不出来（窗口太小？），调整一下微信窗口再填")
+    state["area"] = tuple(int(v) for v in area[:4])
+
+
 def _fill_now(text):
     """真正去点输入框粘贴：核对通过的、和没法核对（暂停中）的都从这儿走。
     成功/失败的状态也从这儿出——核对是异步的，「已填入」不能在发起时就说。"""
@@ -58,6 +82,8 @@ def _fill_now(text):
         return
     shielded = False
     try:
+        if not capture_on.is_set():  # 暂停中坐标是冻结的旧值，先现算一遍再点
+            _fresh_area(state["hwnd"])
         cx, cy = click_point(state["hwnd"], state["area"])
         # 悬浮窗自己置顶，盖住输入框时那一击会点在它自己身上、什么都粘不进去：
         # 填入前让它让一下路（几十毫秒），填完原样回来。

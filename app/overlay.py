@@ -268,6 +268,9 @@ class Overlay:
         self.win.setObjectName("assistantWindow")
         self.win.setWindowTitle("JevChat-Windows")
         self.win.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        # 填入时悬浮窗给输入框让路、填完 show() 回来：没有这个属性 SW_SHOW 会顺手把它激活，
+        # 焦点就从微信身上被抢走了（用户看到的「跳到其他窗口」）。点了它照样正常激活。
+        self.win.setAttribute(Qt.WA_ShowWithoutActivating)
         self.win.setStyleSheet(
             "QWidget#assistantWindow { background: #f5f7f6; border: 1px solid #dce3de; border-radius: 14px; }"
         )
